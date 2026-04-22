@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cloud Build CI/CD — Build, test, push, deploy to Cloud Run
+#
+#  Trigger: push to main branch (configured in Cloud Build console)
+#  Free tier: 120 build-minutes / day
+#
+#  Required one-time setup  →  see DEPLOY.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+steps:
+  # ── 1. Lint ────────────────────────────────────────────────────────────────
+  - name: "python:3.12-slim"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        pip install --quiet ruff
+        ruff check app/
+    id: lint
+
+  # ── 2. Test ────────────────────────────────────────────────────────────────
+  - name: "python:3.12-slim"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        pip install --quiet ".[dev]"
+        pytest tests/ -x -q --tb=short
+    id: test
+
+  # ── 3. Build container image ───────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
+      - "."
+    id: build
+    waitFor: [lint, test]
+
+  # ── 4. Push to Artifact Registry ───────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "--all-tags"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}"
+    id: push
+
+  # ── 5. Deploy to Cloud Run ────────────────────────────────────────────────
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - "run"
+      - "deploy"
+      - "${_SERVICE}"
+      - "--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - "--region=${_REGION}"
+      - "--platform=managed"
+      - "--allow-unauthenticated"
+      - "--memory=1Gi"
+      - "--cpu=1"
+      - "--min-instances=0"
+      - "--max-instances=1"
+      - "--timeout=300"
+      - "--concurrency=20"
+      - "--set-env-vars=RAG_ENV=dev,RAG_PORT=8080"
+      - "--set-secrets=RAG_QDRANT_API_KEY=rag-qdrant-api-key:latest,RAG_QDRANT_HOST=rag-qdrant-host:latest,RAG_GOOGLE_CLIENT_ID=rag-google-client-id:latest,RAG_GOOGLE_CLIENT_SECRET=rag-google-client-secret:latest,RAG_JWT_SECRET_KEY=rag-jwt-secret-key:latest,RAG_OPENROUTER_API_KEY=rag-openrouter-api-key:latest,RAG_LANGFUSE_SECRET_KEY=rag-langfuse-secret-key:latest,RAG_LANGFUSE_PUBLIC_KEY=rag-langfuse-public-key:latest,RAG_GCP_PROJECT_ID=rag-gcp-project-id:latest"
+    id: deploy
+
+# ── Substitution defaults (can be overridden per trigger) ────────────────────
+substitutions:
+  _REGION: us-central1
+  _REPO: rag-repo
+  _SERVICE: rag-backend
+
+options:
+  logging: CLOUD_LOGGING_ONLY
