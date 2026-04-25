@@ -3,7 +3,7 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
-# System deps for pdf parsing
+# System deps for native extensions (pdf parsing, crypto)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -36,15 +36,14 @@ WORKDIR /home/appuser/app
 
 # Copy application
 COPY app/ ./app/
-COPY docling_hybrid/ ./docling_hybrid/
 
 # Drop privileges
 USER appuser
 
-# Healthcheck
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import httpx; r = httpx.get('http://localhost:8000/health'); exit(0 if r.status_code == 200 else 1)"
+# Cloud Run injects PORT (default 8080); the app also reads RAG_PORT.
+ENV PORT=8080
 
-EXPOSE 8000
+EXPOSE ${PORT}
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Use shell form so $PORT is expanded at runtime
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1
