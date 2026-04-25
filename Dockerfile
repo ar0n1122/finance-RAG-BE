@@ -8,7 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
+COPY app/ ./app/
 
 # Install deps into a virtual env that we can copy to runtime
 RUN python -m venv /opt/venv
