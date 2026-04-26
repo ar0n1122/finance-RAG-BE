@@ -53,9 +53,6 @@ dev = [
 # Offline evaluation (not needed at API runtime — ragas imports are lazy)
 eval = ["ragas>=0.2.0"]
 
-# Legacy PDF parsers (optional — replaced by docling)
-legacy-pdf = ["PyMuPDF>=1.24.0", "pdfplumber>=0.11.0"]
-
 # In-process ML models (optional — replaced by Ollama)
 local-models = [
     "sentence-transformers>=3.0.0",
