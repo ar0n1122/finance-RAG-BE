@@ -103,17 +103,21 @@ class Settings(BaseSettings):
     def parse_allowed_origins(cls, v: object) -> object:
         """Accept pipe-separated origins (avoids gcloud --update-env-vars comma parsing).
         Also accepts JSON arrays and plain comma-separated strings.
+        Trailing slashes are stripped — browsers send Origin without trailing slash.
         """
+        def _clean(origins: list[str]) -> list[str]:
+            return [o.strip().rstrip("/") for o in origins if o.strip()]
+
         if isinstance(v, str):
             v = v.strip()
             if v.startswith("["):
                 import json
-                return json.loads(v)
-            # Pipe-separated: preferred format for Cloud Run env vars
+                return _clean(json.loads(v))
             if "|" in v:
-                return [o.strip() for o in v.split("|") if o.strip()]
-            # Comma-separated fallback
-            return [o.strip() for o in v.split(",") if o.strip()]
+                return _clean(v.split("|"))
+            return _clean(v.split(","))
+        if isinstance(v, list):
+            return _clean(v)
         return v
 
     # ── Qdrant ───────────────────────────────────────────────────────────────
