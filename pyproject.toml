@@ -20,30 +20,22 @@ dependencies = [
     "google-cloud-firestore>=2.16.0",
     "google-cloud-storage>=2.17.0",
     "google-auth>=2.30.0",
-    "google-auth-oauthlib>=1.2.0",
     # --- Auth ---
     "PyJWT>=2.8.0",
     "cryptography>=42.0.0",
     # --- LangChain / LangGraph ---
-    "langchain-core>=0.3.0",
     "langgraph>=0.2.0",
-    "langchain-community>=0.3.0",
-    "langchain-openai>=0.2.0",
     # --- PDF Processing (Docling) ---
     "docling>=2.0.0",
     "docling-core>=2.0.0",
     # --- Monitoring ---
     "langfuse>=2.40.0",
     "prometheus-client>=0.21.0",
-    "prometheus-fastapi-instrumentator>=7.0.0",
-    # --- Evaluation ---
-    "ragas>=0.2.0",
     # --- Logging ---
     "structlog>=24.2.0",
     # --- Utilities ---
     "tenacity>=8.3.0",
     "pyyaml>=6.0.0",
-    "jinja2>=3.1.0",
     "numpy>=1.26.0",
 ]
 
@@ -57,6 +49,9 @@ dev = [
     "mypy>=1.10.0",
     "pre-commit>=3.7.0",
 ]
+
+# Offline evaluation (not needed at API runtime — ragas imports are lazy)
+eval = ["ragas>=0.2.0"]
 
 # Legacy PDF parsers (optional — replaced by docling)
 legacy-pdf = ["PyMuPDF>=1.24.0", "pdfplumber>=0.11.0"]
