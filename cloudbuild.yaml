@@ -1,5 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  Cloud Build CI/CD — Build, test, push, deploy to Cloud Run
+#  Cloud Build — Build, test, push (CI pipeline only)
+#
+#  ⚠ DEPLOYMENT IS HANDLED BY GITHUB ACTIONS (deploy-cloud-run.yml).
+#  This file is intentionally limited to build + test + push.
+#  Cloud Build cannot access GitHub repo secrets/variables, so all
+#  runtime env vars and secrets are injected exclusively by GitHub Actions.
 #
 #  Trigger: push to main branch (configured in Cloud Build console)
 #  Free tier: 120 build-minutes / day
@@ -49,6 +54,12 @@ steps:
     id: push
 
   # ── 5. Deploy to Cloud Run ────────────────────────────────────────────────
+  #
+  #  ⚠ NOTE: Full deployment (with all env vars and secrets) is handled by
+  #  GitHub Actions (deploy-cloud-run.yml). Cloud Build cannot read GitHub
+  #  repo secrets or variables, so this step only updates the image on an
+  #  ALREADY CONFIGURED Cloud Run service (all env vars must be pre-set).
+  #  Do NOT use this as the primary deployment path.
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
@@ -61,12 +72,11 @@ steps:
       - "--allow-unauthenticated"
       - "--memory=1Gi"
       - "--cpu=1"
+      - "--cpu-throttling"
       - "--min-instances=0"
       - "--max-instances=1"
       - "--timeout=300"
       - "--concurrency=20"
-      - "--set-env-vars=RAG_ENV=dev,RAG_PORT=8080"
-      - "--set-secrets=RAG_QDRANT_API_KEY=rag-qdrant-api-key:latest,RAG_QDRANT_HOST=rag-qdrant-host:latest,RAG_GOOGLE_CLIENT_ID=rag-google-client-id:latest,RAG_GOOGLE_CLIENT_SECRET=rag-google-client-secret:latest,RAG_JWT_SECRET_KEY=rag-jwt-secret-key:latest,RAG_OPENROUTER_API_KEY=rag-openrouter-api-key:latest,RAG_LANGFUSE_SECRET_KEY=rag-langfuse-secret-key:latest,RAG_LANGFUSE_PUBLIC_KEY=rag-langfuse-public-key:latest,RAG_GCP_PROJECT_ID=rag-gcp-project-id:latest"
     id: deploy
 
 # ── Substitution defaults (can be overridden per trigger) ────────────────────
