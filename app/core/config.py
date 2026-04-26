@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, EnvSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
 
 
 # Resolved once at import time — avoids reading os.environ on every access.
@@ -56,6 +56,23 @@ class RAGStrategy(str, Enum):
     SELF_CORRECTING = "self_correcting"
     AGENTIC = "agentic"
     ADAPTIVE = "adaptive"
+
+
+class _PipeAwareEnvSource(EnvSettingsSource):
+    """EnvSettingsSource that falls back to the raw string when json.loads fails.
+
+    pydantic-settings normally calls json.loads() on any list/dict field before
+    field validators run.  For fields like ``allowed_origins`` that accept
+    pipe-separated input (``a|b|c``), this would crash with a JSONDecodeError.
+    By catching the ValueError and returning the raw string, we let the
+    field_validator handle all format variants (JSON, pipe, comma).
+    """
+
+    def decode_complex_value(self, field_name: str, field_info: object, value: str) -> object:
+        try:
+            return super().decode_complex_value(field_name, field_info, value)
+        except ValueError:
+            return value  # pass raw string through to field_validator
 
 
 class Settings(BaseSettings):
@@ -241,6 +258,27 @@ class Settings(BaseSettings):
             "nemotron": EmbeddingModel.NVIDIA_NEMOTRON.value,
         }
         return aliases.get(v.lower(), v) if isinstance(v, str) else v
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        secrets_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Replace the default EnvSettingsSource with one that tolerates
+        non-JSON values for list fields (e.g. pipe-separated RAG_ALLOWED_ORIGINS).
+        Without this, pydantic-settings calls json.loads() on the raw string
+        *before* any field_validator runs, crashing on pipe-separated input.
+        """
+        return (
+            init_settings,
+            _PipeAwareEnvSource(settings_cls),
+            dotenv_settings,
+            secrets_settings,
+        )
 
     @field_validator("log_level")
     @classmethod
