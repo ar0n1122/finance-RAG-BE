@@ -68,6 +68,27 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             structlog.contextvars.clear_contextvars()
 
 
+class StripApiPrefixMiddleware(BaseHTTPMiddleware):
+    """Strip the /api path prefix when present.
+
+    Firebase Hosting rewrites /api/** → Cloud Run preserving the full path,
+    so Cloud Run receives /api/auth/google instead of /auth/google.
+    This middleware normalises the path so all deployment modes work:
+
+      Firebase Hosting → Cloud Run  : /api/auth/google → /auth/google  ✓
+      Vite dev proxy (strips /api)  : /auth/google     → /auth/google  ✓
+      nginx (strips /api)           : /auth/google     → /auth/google  ✓
+    """
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        path: str = request.scope["path"]
+        if path.startswith("/api"):
+            stripped = path[4:] or "/"
+            request.scope["path"] = stripped
+            request.scope["raw_path"] = stripped.encode()
+        return await call_next(request)
+
+
 def setup_middleware(app: FastAPI) -> None:
     """Configure all middleware on the FastAPI app."""
     settings = get_settings()
@@ -80,6 +101,9 @@ def setup_middleware(app: FastAPI) -> None:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Strip /api prefix forwarded by Firebase Hosting → Cloud Run rewrite
+    app.add_middleware(StripApiPrefixMiddleware)
 
     # Request logging (must be added after CORS so CORS runs first)
     app.add_middleware(RequestLoggingMiddleware)
