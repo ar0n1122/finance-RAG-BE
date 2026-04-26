@@ -81,6 +81,24 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     allowed_origins: list[str] = Field(default_factory=list)
 
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, v: object) -> object:
+        """Accept pipe-separated origins (avoids gcloud --update-env-vars comma parsing).
+        Also accepts JSON arrays and plain comma-separated strings.
+        """
+        if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("["):
+                import json
+                return json.loads(v)
+            # Pipe-separated: preferred format for Cloud Run env vars
+            if "|" in v:
+                return [o.strip() for o in v.split("|") if o.strip()]
+            # Comma-separated fallback
+            return [o.strip() for o in v.split(",") if o.strip()]
+        return v
+
     # ── Qdrant ───────────────────────────────────────────────────────────────
     qdrant_host: str = ""
     qdrant_port: int = 6333
