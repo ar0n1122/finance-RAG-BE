@@ -16,16 +16,13 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir ".[all]"
+    # Install CPU-only PyTorch first so docling doesn't pull the CUDA variant (~1.7 GB savings)
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir .
 
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
-
-# Runtime system deps for PyMuPDF / PDFPlumber
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libmupdf-dev \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy virtualenv from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -46,5 +43,4 @@ ENV PORT=8080
 
 EXPOSE ${PORT}
 
-# Use shell form so $PORT is expanded at runtime
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
