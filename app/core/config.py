@@ -266,7 +266,7 @@ class Settings(BaseSettings):
         init_settings: PydanticBaseSettingsSource,
         env_settings: PydanticBaseSettingsSource,
         dotenv_settings: PydanticBaseSettingsSource,
-        secrets_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         """Replace the default EnvSettingsSource with one that tolerates
         non-JSON values for list fields (e.g. pipe-separated RAG_ALLOWED_ORIGINS).
@@ -277,7 +277,7 @@ class Settings(BaseSettings):
             init_settings,
             _PipeAwareEnvSource(settings_cls),
             dotenv_settings,
-            secrets_settings,
+            file_secret_settings,
         )
 
     @field_validator("log_level")
