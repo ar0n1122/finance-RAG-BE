@@ -1,0 +1,130 @@
+name: Build and Deploy to Cloud Run
+
+on:
+  push:
+    branches: ["main"]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: us-central1
+  SERVICE_NAME: rag-backend
+  REPOSITORY: rag-repo
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+
+      - id: build
+        name: Build and push image
+        run: |
+          IMAGE_URL="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          docker build -t "$IMAGE_URL" .
+          docker push "$IMAGE_URL"
+          echo "image_url=$IMAGE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: deploy
+        name: Deploy to Cloud Run (free-tier-safe)
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ steps.build.outputs.image_url }}
+          env_vars: |
+            RAG_ENV=${{ vars.RAG_ENV }}
+            RAG_APP_NAME=${{ vars.RAG_APP_NAME }}
+            RAG_APP_VERSION=${{ vars.RAG_APP_VERSION }}
+            RAG_DEBUG=${{ vars.RAG_DEBUG }}
+            RAG_HOST=${{ vars.RAG_HOST }}
+            RAG_PORT=${{ vars.RAG_PORT }}
+            RAG_LOG_LEVEL=${{ vars.RAG_LOG_LEVEL }}
+            RAG_ALLOWED_ORIGINS=${{ vars.RAG_ALLOWED_ORIGINS }}
+
+            RAG_QDRANT_HOST=${{ vars.RAG_QDRANT_HOST }}
+            RAG_QDRANT_PORT=${{ vars.RAG_QDRANT_PORT }}
+            RAG_QDRANT_API_KEY=${{ secrets.RAG_QDRANT_API_KEY }}
+            RAG_QDRANT_COLLECTION=${{ vars.RAG_QDRANT_COLLECTION }}
+            RAG_QDRANT_TIMEOUT=${{ vars.RAG_QDRANT_TIMEOUT }}
+
+            RAG_GCP_PROJECT_ID=${{ vars.RAG_GCP_PROJECT_ID }}
+            RAG_GCS_BUCKET=${{ vars.RAG_GCS_BUCKET }}
+            RAG_FIRESTORE_DATABASE=${{ vars.RAG_FIRESTORE_DATABASE }}
+
+            RAG_GOOGLE_CLIENT_ID=${{ vars.RAG_GOOGLE_CLIENT_ID }}
+            RAG_GOOGLE_CLIENT_SECRET=${{ secrets.RAG_GOOGLE_CLIENT_SECRET }}
+
+            RAG_JWT_SECRET_KEY=${{ secrets.RAG_JWT_SECRET_KEY }}
+            RAG_JWT_EXPIRATION_HOURS=${{ vars.RAG_JWT_EXPIRATION_HOURS }}
+
+            RAG_LLM_PROVIDER=${{ vars.RAG_LLM_PROVIDER }}
+            RAG_OPENROUTER_API_KEY=${{ secrets.RAG_OPENROUTER_API_KEY }}
+            RAG_OPENROUTER_MODEL=${{ vars.RAG_OPENROUTER_MODEL }}
+            RAG_OPENROUTER_BASE_URL=${{ vars.RAG_OPENROUTER_BASE_URL }}
+            RAG_LLM_FALLBACK_PROVIDER=${{ vars.RAG_LLM_FALLBACK_PROVIDER }}
+            RAG_LLM_MAX_RETRIES=${{ vars.RAG_LLM_MAX_RETRIES }}
+            RAG_LLM_TIMEOUT=${{ vars.RAG_LLM_TIMEOUT }}
+
+            RAG_EMBEDDING_PROVIDER=${{ vars.RAG_EMBEDDING_PROVIDER }}
+            RAG_EMBEDDING_MODEL=${{ vars.RAG_EMBEDDING_MODEL }}
+            RAG_OPENROUTER_EMBEDDING_MODEL=${{ vars.RAG_OPENROUTER_EMBEDDING_MODEL }}
+            RAG_EMBEDDING_API_FORMAT=${{ vars.RAG_EMBEDDING_API_FORMAT }}
+            RAG_EMBEDDING_BATCH_SIZE=${{ vars.RAG_EMBEDDING_BATCH_SIZE }}
+
+            RAG_DENSE_TOP_K=${{ vars.RAG_DENSE_TOP_K }}
+            RAG_SPARSE_TOP_K=${{ vars.RAG_SPARSE_TOP_K }}
+            RAG_RERANK_TOP_K=${{ vars.RAG_RERANK_TOP_K }}
+            RAG_RRF_K=${{ vars.RAG_RRF_K }}
+            RAG_RERANKER_ENABLED=${{ vars.RAG_RERANKER_ENABLED }}
+
+            RAG_DOCLING_MODE=${{ vars.RAG_DOCLING_MODE }}
+            RAG_DOCLING_DO_TABLE_STRUCTURE=${{ vars.RAG_DOCLING_DO_TABLE_STRUCTURE }}
+            RAG_DOCLING_TABLE_MODE=${{ vars.RAG_DOCLING_TABLE_MODE }}
+            RAG_DOCLING_DO_CELL_MATCHING=${{ vars.RAG_DOCLING_DO_CELL_MATCHING }}
+            RAG_DOCLING_DOCUMENT_TIMEOUT=${{ vars.RAG_DOCLING_DOCUMENT_TIMEOUT }}
+            RAG_DOCLING_NUM_THREADS=${{ vars.RAG_DOCLING_NUM_THREADS }}
+            RAG_DOCLING_DEVICE=${{ vars.RAG_DOCLING_DEVICE }}
+            RAG_DOCLING_IMAGES_SCALE=${{ vars.RAG_DOCLING_IMAGES_SCALE }}
+
+            RAG_CHUNKING_STRATEGY=${{ vars.RAG_CHUNKING_STRATEGY }}
+            RAG_CHUNK_SIZE=${{ vars.RAG_CHUNK_SIZE }}
+            RAG_CHUNK_OVERLAP=${{ vars.RAG_CHUNK_OVERLAP }}
+            RAG_MIN_CHUNK_CHARS=${{ vars.RAG_MIN_CHUNK_CHARS }}
+            RAG_RAG_STRATEGY=${{ vars.RAG_RAG_STRATEGY }}
+            RAG_PROMPT_VERSION=${{ vars.RAG_PROMPT_VERSION }}
+
+            RAG_GUARDRAILS_ENABLED=${{ vars.RAG_GUARDRAILS_ENABLED }}
+            RAG_MAX_INPUT_LENGTH=${{ vars.RAG_MAX_INPUT_LENGTH }}
+
+            RAG_LANGFUSE_ENABLED=${{ vars.RAG_LANGFUSE_ENABLED }}
+            RAG_LANGFUSE_SECRET_KEY=${{ secrets.RAG_LANGFUSE_SECRET_KEY }}
+            RAG_LANGFUSE_PUBLIC_KEY=${{ secrets.RAG_LANGFUSE_PUBLIC_KEY }}
+            RAG_LANGFUSE_HOST=${{ vars.RAG_LANGFUSE_HOST }}
+
+            RAG_BENCHMARK_DATASET_PATH=${{ vars.RAG_BENCHMARK_DATASET_PATH }}
+          flags: >-
+            --allow-unauthenticated
+            --min-instances=0
+            --max-instances=1
+            --memory=1Gi
+            --cpu=1
+            --cpu-throttling
+            --concurrency=20
+            --timeout=300
+
+      - name: Show deployed URL
+        run: echo "${{ steps.deploy.outputs.url }}"

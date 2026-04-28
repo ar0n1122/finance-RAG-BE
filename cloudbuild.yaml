@@ -1,0 +1,89 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cloud Build — Build, test, push (CI pipeline only)
+#
+#  ⚠ DEPLOYMENT IS HANDLED BY GITHUB ACTIONS (deploy-cloud-run.yml).
+#  This file is intentionally limited to build + test + push.
+#  Cloud Build cannot access GitHub repo secrets/variables, so all
+#  runtime env vars and secrets are injected exclusively by GitHub Actions.
+#
+#  Trigger: push to main branch (configured in Cloud Build console)
+#  Free tier: 120 build-minutes / day
+#
+#  Required one-time setup  →  see DEPLOY.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+steps:
+  # ── 1. Lint ────────────────────────────────────────────────────────────────
+  - name: "python:3.12-slim"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        pip install --quiet ruff
+        ruff check app/
+    id: lint
+
+  # ── 2. Test ────────────────────────────────────────────────────────────────
+  - name: "python:3.12-slim"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        pip install --quiet ".[dev]"
+        pytest tests/ -x -q --tb=short
+    id: test
+
+  # ── 3. Build container image ───────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
+      - "."
+    id: build
+    waitFor: [lint, test]
+
+  # ── 4. Push to Artifact Registry ───────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "--all-tags"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}"
+    id: push
+
+  # ── 5. Deploy to Cloud Run ────────────────────────────────────────────────
+  #
+  #  ⚠ NOTE: Full deployment (with all env vars and secrets) is handled by
+  #  GitHub Actions (deploy-cloud-run.yml). Cloud Build cannot read GitHub
+  #  repo secrets or variables, so this step only updates the image on an
+  #  ALREADY CONFIGURED Cloud Run service (all env vars must be pre-set).
+  #  Do NOT use this as the primary deployment path.
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - "run"
+      - "deploy"
+      - "${_SERVICE}"
+      - "--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - "--region=${_REGION}"
+      - "--platform=managed"
+      - "--allow-unauthenticated"
+      - "--memory=1Gi"
+      - "--cpu=1"
+      - "--cpu-throttling"
+      - "--min-instances=0"
+      - "--max-instances=1"
+      - "--timeout=300"
+      - "--concurrency=20"
+    id: deploy
+
+# ── Substitution defaults (can be overridden per trigger) ────────────────────
+substitutions:
+  _REGION: us-central1
+  _REPO: rag-repo
+  _SERVICE: rag-backend
+
+options:
+  logging: CLOUD_LOGGING_ONLY
