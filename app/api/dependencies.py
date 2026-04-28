@@ -151,6 +151,7 @@ def get_hybrid_retriever() -> "HybridRetriever":
 
 @functools.lru_cache
 def get_generation_pipeline() -> "GenerationPipeline":
+    from app.generation.fireworks_provider import FireworksProvider
     from app.generation.ollama_provider import OllamaProvider
     from app.generation.openai_provider import OpenAIProvider
     from app.generation.openrouter_provider import OpenRouterProvider
@@ -159,7 +160,9 @@ def get_generation_pipeline() -> "GenerationPipeline":
     settings = get_settings()
 
     # ── Primary provider ──────────────────────────────────────────────────
-    if settings.llm_provider == "openrouter":
+    if settings.llm_provider == "fireworks":
+        primary = FireworksProvider()
+    elif settings.llm_provider == "openrouter":
         primary = OpenRouterProvider()
     elif settings.llm_provider == "openai":
         primary = OpenAIProvider(
@@ -174,6 +177,8 @@ def get_generation_pipeline() -> "GenerationPipeline":
     fallback = None
     if settings.llm_fallback_provider == "openrouter":
         fallback = OpenRouterProvider()
+    elif settings.llm_fallback_provider == "fireworks":
+        fallback = FireworksProvider()
     elif settings.llm_fallback_provider == "openai":
         fallback = OpenAIProvider()
     elif settings.llm_fallback_provider == "ollama":
