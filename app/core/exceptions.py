@@ -125,3 +125,15 @@ class NotFoundError(RAGException):
 
     def __init__(self, detail: str = "Resource not found"):
         super().__init__(detail, status_code=self.status_code)
+
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+
+
+class RateLimitError(RAGException):
+    """Free-tier usage limit exhausted."""
+
+    status_code = 429
+
+    def __init__(self, detail: str = "You have exhausted your free use limit. Contact Admin"):
+        super().__init__(detail, status_code=self.status_code)

@@ -15,11 +15,14 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
-from app.api.dependencies import get_cloud_storage_client, get_firestore_client, get_ingestion_pipeline
+from app.api.dependencies import get_cloud_storage_client, get_firestore_client, get_ingestion_pipeline, get_redis_client
+from app.api.rate_limiter import check_doc_upload_limit
 from app.auth.dependencies import RequiredUser
-from app.core.exceptions import IngestionError
+from app.core.config import get_settings
+from app.core.exceptions import IngestionError, RateLimitError
+from app.storage.redis_client import RedisClient, RedisUnavailableError
 from app.core.logging import get_logger
 from app.models.domain import DocumentStatus
 from app.models.responses import BatchIngestResponse, IngestResponse
@@ -76,7 +79,12 @@ def _run_processing(document_id: str, filename: str, content_type: str, user_id:
 
 
 @router.post("/ingest", response_model=IngestResponse)
-async def ingest_document(file: UploadFile, user: RequiredUser) -> IngestResponse:
+async def ingest_document(
+    file: UploadFile,
+    user: RequiredUser,
+    _limit: None = Depends(check_doc_upload_limit),
+    redis: RedisClient = Depends(get_redis_client),
+) -> IngestResponse:
     """Upload a document and kick off async processing."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -104,6 +112,13 @@ async def ingest_document(file: UploadFile, user: RequiredUser) -> IngestRespons
         logger.exception("upload_failed", filename=file.filename)
         raise HTTPException(status_code=500, detail=f"Upload failed: {exc}") from exc
 
+    # Increment the upload counter now that the file is safely stored.
+    # Failures before this point (bad file, GCS error) do not consume quota.
+    try:
+        await redis.incr(f"rl:docs:{user.user_id}")
+    except RedisUnavailableError:
+        logger.warning("redis_unavailable_doc_counter_skip", user_id=user.user_id)
+
     # Phase 2 — kick off heavy processing in background (dedicated executor)
     loop = asyncio.get_running_loop()
     loop.run_in_executor(_INGEST_EXECUTOR, _run_processing, document_id, file.filename, content_type, user.user_id)
@@ -122,7 +137,11 @@ _BATCH_MAX_FILES = 10
 
 
 @router.post("/ingest/batch", response_model=BatchIngestResponse)
-async def ingest_batch(files: list[UploadFile], user: RequiredUser) -> BatchIngestResponse:
+async def ingest_batch(
+    files: list[UploadFile],
+    user: RequiredUser,
+    redis: RedisClient = Depends(get_redis_client),
+) -> BatchIngestResponse:
     """Upload multiple PDF files at once and process each in the background."""
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
@@ -132,6 +151,30 @@ async def ingest_batch(files: list[UploadFile], user: RequiredUser) -> BatchInge
             status_code=400,
             detail=f"Too many files ({len(files)}). Maximum allowed is {_BATCH_MAX_FILES}.",
         )
+
+    # ── Rate limit check (batch) ──────────────────────────────────────────────
+    settings = get_settings()
+    # Exemption check — members of 'rl:exempt' bypass all upload limits
+    _batch_exempt = False
+    try:
+        _batch_exempt = await redis.sismember("rl:exempt", user.email)
+    except RedisUnavailableError:
+        pass  # fail-open
+    if not _batch_exempt:
+        try:
+            current_doc_count = await redis.get_int(f"rl:docs:{user.user_id}")
+            if current_doc_count >= settings.rate_limit_docs:
+                raise RateLimitError("You have exhausted your free use limit. Contact Admin")
+            # Reject the whole batch if it would push the user over the limit.
+            if current_doc_count + len(files) > settings.rate_limit_docs:
+                remaining = settings.rate_limit_docs - current_doc_count
+                raise RateLimitError(
+                    f"Batch would exceed your upload limit. You may upload at most {remaining} more document(s)."
+                )
+        except RateLimitError:
+            raise
+        except RedisUnavailableError:
+            logger.warning("redis_unavailable_batch_limit_skipped", user_id=user.user_id)
 
     # Read all files and validate total size + types
     file_data: list[tuple[str, bytes]] = []
@@ -180,6 +223,12 @@ async def ingest_batch(files: list[UploadFile], user: RequiredUser) -> BatchInge
             "application/pdf",
             user.user_id,
         )
+
+        # Increment counter per successfully accepted upload.
+        try:
+            await redis.incr(f"rl:docs:{user.user_id}")
+        except RedisUnavailableError:
+            logger.warning("redis_unavailable_batch_counter_skip", user_id=user.user_id)
 
         documents.append(
             IngestResponse(
