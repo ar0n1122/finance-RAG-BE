@@ -144,8 +144,8 @@ class Settings(BaseSettings):
     jwt_expiration_hours: int = 24
 
     # ── LLM ───────────────────────────────────────────────────────────────────
-    llm_provider: Literal["ollama", "openai", "openrouter"] = "ollama"
-    llm_fallback_provider: Literal["ollama", "openai", "openrouter", "none"] = "none"
+    llm_provider: Literal["ollama", "openai", "openrouter", "fireworks"] = "ollama"
+    llm_fallback_provider: Literal["ollama", "openai", "openrouter", "fireworks", "none"] = "none"
     llm_max_retries: int = 3
     llm_retry_backoff: float = 1.0  # seconds, multiplied by attempt number
     llm_timeout: float = 60.0  # seconds
@@ -163,6 +163,11 @@ class Settings(BaseSettings):
     openrouter_model: str = ""
     openrouter_base_url: str = ""
     openrouter_embedding_model: str = ""
+
+    # Fireworks AI (OpenAI-compatible, https://fireworks.ai)
+    fireworks_api_key: str = ""
+    fireworks_model: str = ""
+    fireworks_base_url: str = "https://api.fireworks.ai/inference/v1"
 
     # LLM Fallback (OpenAI-compatible endpoint)
     llm_fallback_model: str = ""
