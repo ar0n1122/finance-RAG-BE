@@ -91,8 +91,8 @@ def make_grade_documents_node(gen_pipeline: GenerationPipeline):
         irrelevant = 0
 
         for chunk in chunks:
-            _, user_prompt = template.format(question=query, document=chunk.text)
-            response = gen_pipeline.generate_raw(user_prompt, temperature=0.0, max_tokens=64, operation=OPERATION_GRADING)
+            _, user_prompt = template.format(question=query, document=chunk.text[:400])
+            response = gen_pipeline.generate_raw(user_prompt, temperature=0.0, max_tokens=10, operation=OPERATION_GRADING)
             if "yes" in response.text.lower():
                 relevant.append(chunk)
             else:
@@ -117,32 +117,28 @@ def make_reflection_node(gen_pipeline: GenerationPipeline):
         answer = state.get("answer", "")
         query = state["query"]
 
-        # Hallucination check
-        hal_template = prompt_manager.get("hallucination_check_v1")
-        context = "\n\n".join(c.text for c in chunks)
-        _, hal_prompt = hal_template.format(context=context, answer=answer)
-        hal_resp = gen_pipeline.generate_raw(hal_prompt, temperature=0.0, max_tokens=64, operation=OPERATION_REFLECTION)
-        hal_text = hal_resp.text.strip().lower()
-        logger.debug("hallucination_raw", raw_repr=repr(hal_text), length=len(hal_text))
-        is_hallucination = bool(hal_text) and "yes" in hal_text
-
-        # Reflection for correction
-        ref_template = prompt_manager.get("reflection_v1")
-        _, ref_prompt = ref_template.format(question=query, context=context, answer=answer)
-        ref_resp = gen_pipeline.generate_raw(ref_prompt, temperature=0.0, max_tokens=128, operation=OPERATION_REFLECTION)
+        # Combined hallucination check + reflection in a single LLM call
+        template = prompt_manager.get("reflect_v2")
+        raw_context = "\n\n".join(c.text for c in chunks)
+        context = raw_context[:2000]
+        _, ref_prompt = template.format(question=query, context=context, answer=answer)
+        ref_resp = gen_pipeline.generate_raw(ref_prompt, temperature=0.0, max_tokens=20, operation=OPERATION_REFLECTION)
         resp_text = ref_resp.text.strip()
         logger.debug("reflection_raw", raw_repr=repr(resp_text), length=len(resp_text))
+
         if not resp_text:
             # Empty LLM response — treat as approved (benefit of the doubt)
             needs_correction = False
         else:
-            resp_upper = resp_text.upper()
-            needs_correction = "APPROVED" not in resp_upper
+            needs_correction = "APPROVED" not in resp_text.upper()
+
+        # is_hallucination is implied by needs_correction in the combined prompt
+        is_hallucination = needs_correction
 
         attempts = state.get("correction_attempts", 0) + 1
 
         update: dict[str, Any] = {
-            "reflection": ref_resp.text,
+            "reflection": resp_text,
             "is_hallucination": is_hallucination,
             "needs_correction": needs_correction,
             "correction_attempts": attempts,
@@ -167,7 +163,7 @@ def make_rewrite_query_node(gen_pipeline: GenerationPipeline):
         query = state["query"]
         template = prompt_manager.get("query_rewrite_v1")
         _, user_prompt = template.format(question=query)
-        response = gen_pipeline.generate_raw(user_prompt, temperature=0.3, max_tokens=256, operation=OPERATION_REWRITE)
+        response = gen_pipeline.generate_raw(user_prompt, temperature=0.3, max_tokens=128, operation=OPERATION_REWRITE)
 
         rewritten = response.text.strip()
         attempts = state.get("retrieval_attempts", 0) + 1

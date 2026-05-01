@@ -239,7 +239,36 @@ class Settings(BaseSettings):
 
     # ── Evaluation ────────────────────────────────────────────────────────────
     benchmark_dataset_path: str = ""
+    # ── Redis / Rate Limiting ─────────────────────────────────────────────────
+    # Set RAG_REDIS_URL to a blank string to disable Redis (rate limiting becomes
+    # a no-op — useful when Redis is not available in a given environment).
+    redis_url: str = "redis://localhost:6379/0"
+    rate_limit_docs: int = 3      # max documents a user may upload (lifetime)
+    rate_limit_queries: int = 15  # max queries a user may submit (lifetime)
+    # Emails listed here are seeded into the Redis SET "rl:exempt" at startup.
+    # Users whose email is in that set bypass both doc-upload and query limits.
+    # You can also manage the set directly: redis-cli SADD rl:exempt user@example.com
+    rate_limit_exempt_emails: list[str] = []
 
+    @field_validator("rate_limit_exempt_emails", mode="before")
+    @classmethod
+    def parse_exempt_emails(cls, v: object) -> object:
+        """Accept comma-separated, pipe-separated, JSON array, or empty string.
+
+        Pipe separator is required when setting via gcloud --update-env-vars
+        because gcloud treats commas as argument delimiters (same as allowed_origins).
+        """
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            if v.startswith("["):
+                import json
+                return [e.strip() for e in json.loads(v) if str(e).strip()]
+            if "|" in v:
+                return [e.strip() for e in v.split("|") if e.strip()]
+            return [e.strip() for e in v.split(",") if e.strip()]
+        return v
     # ── Derived ───────────────────────────────────────────────────────────────
     @property
     def embedding_dim(self) -> int:

@@ -23,6 +23,7 @@ from app.api.dependencies import (
     get_input_guard,
     get_output_guard,
     get_rag_registry,
+    get_redis_client,
     get_tracing_provider,
 )
 from app.rag.document_resolver import resolve_document_ids
@@ -31,8 +32,10 @@ from app.core.config import get_settings
 from app.core.exceptions import (
     GenerationError,
     GuardrailViolationError,
+    RateLimitError,
     RetrievalError,
 )
+from app.storage.redis_client import RedisUnavailableError
 from app.core.logging import get_logger
 from app.models.requests import QueryRequest
 from app.models.responses import (
@@ -176,6 +179,31 @@ async def query(body: QueryRequest, user: OptionalUser) -> QueryResponse:
 
     strategy_name = body.rag_strategy or settings.rag_strategy.value
 
+    # ── Rate limiting (authenticated users only) ───────────────────────────
+    if user:
+        _redis = get_redis_client()
+        # Exemption check first — members of 'rl:exempt' bypass all query limits
+        _exempt = False
+        try:
+            _exempt = await _redis.sismember("rl:exempt", user.email)
+        except RedisUnavailableError:
+            pass  # fail-open
+        if not _exempt:
+            try:
+                _q_count = await _redis.get_int(f"rl:queries:{user.user_id}")
+                if _q_count >= settings.rate_limit_queries:
+                    logger.info(
+                        "query_limit_exceeded",
+                        user_id=user.user_id,
+                        count=_q_count,
+                        limit=settings.rate_limit_queries,
+                    )
+                    raise RateLimitError("You have exhausted your free use limit. Contact Admin")
+            except RateLimitError:
+                raise
+            except RedisUnavailableError:
+                logger.warning("redis_unavailable_query_limit_skipped", user_id=user.user_id)
+
     # ── Input guardrails (fast, regex-based — safe on the event loop) ─────
     try:
         input_guard = get_input_guard()
@@ -262,7 +290,12 @@ async def query(body: QueryRequest, user: OptionalUser) -> QueryResponse:
             input=sanitised_query,
             output=result.answer[:500],
         )
-
+        # ── Increment query counter on success ────────────────────────────
+        if user:
+            try:
+                await get_redis_client().incr(f"rl:queries:{user.user_id}")
+            except RedisUnavailableError:
+                logger.warning("redis_unavailable_query_counter_skip", user_id=user.user_id)
         return QueryResponse(
             answer=result.answer,
             sources=source_responses,

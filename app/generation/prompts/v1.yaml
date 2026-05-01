@@ -173,3 +173,32 @@ hallucination_check_v1:
     Does the answer contain any claims NOT supported by the context?
     Respond with 'yes' if there are hallucinations, 'no' if the answer
     is fully grounded in the context.
+
+reflect_v2:
+  version: "2"
+  description: "Combined hallucination check + reflection in a single call"
+  required_vars:
+    - question
+    - context
+    - answer
+  system: >-
+    You are a critical reviewer evaluating an AI-generated answer for
+    factual accuracy and groundedness.
+  user: >-
+    Original question: {question}
+
+    Context:
+    {context}
+
+    Generated answer:
+    {answer}
+
+    Does the answer correctly address the question using only facts from
+    the context, with no hallucinated claims?
+
+    Reply with EXACTLY one word:
+    APPROVED — if the answer is factually correct, grounded, and addresses the question
+    NEEDS_CORRECTION — if the answer contains hallucinations, factual errors, or
+    completely fails to address the question
+
+    One word only:
