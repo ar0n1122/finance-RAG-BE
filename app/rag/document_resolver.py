@@ -109,7 +109,7 @@ def resolve_document_ids(
     return all_ids
 
 
-def _get_chat_context(firestore: FirestoreClient, session_id: str, max_turns: int = 6) -> str:
+def _get_chat_context(firestore: FirestoreClient, session_id: str, max_turns: int = 3) -> str:
     """Fetch the last few messages from a chat session as context."""
     try:
         session = firestore.get_chat_session(session_id)
@@ -171,7 +171,7 @@ def _resolve_via_llm(
         user_prompt,
         system_prompt=system_prompt,
         temperature=0.0,
-        max_tokens=1024,
+        max_tokens=200,
         operation="document_resolve",
     )
     elapsed = (time.perf_counter() - t0) * 1000

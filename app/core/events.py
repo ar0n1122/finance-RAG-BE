@@ -42,6 +42,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.warning("service_verification_partial_failure", error=str(exc))
 
+    # Redis connectivity check (non-fatal — rate limiting fails-open when Redis is down)
+    try:
+        from app.api.dependencies import get_redis_client
+
+        redis = get_redis_client()
+        reachable = await redis.ping()
+        if reachable:
+            logger.info("redis_connected", url=settings.redis_url)
+            # Seed the exemption SET from config (idempotent — SADD ignores duplicates)
+            if settings.rate_limit_exempt_emails:
+                await redis.sadd("rl:exempt", *settings.rate_limit_exempt_emails)
+                logger.info(
+                    "rate_limit_exempt_seeded",
+                    count=len(settings.rate_limit_exempt_emails),
+                    emails=settings.rate_limit_exempt_emails,
+                )
+        else:
+            logger.warning("redis_unreachable_rate_limiting_disabled", url=settings.redis_url)
+    except Exception as exc:
+        logger.warning("redis_startup_check_failed", error=str(exc))
+
     # Mark documents stuck in "processing" from a previous crash as "failed"
     try:
         from app.api.dependencies import get_firestore_client
@@ -66,3 +87,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Shutdown
     logger.info("application_shutting_down")
+
+    # Close Redis connection pool cleanly
+    try:
+        from app.api.dependencies import get_redis_client
+        await get_redis_client().close()
+    except Exception:
+        pass

@@ -118,6 +118,11 @@ jobs:
             RAG_LANGFUSE_HOST=${{ vars.RAG_LANGFUSE_HOST }}
 
             RAG_BENCHMARK_DATASET_PATH=${{ vars.RAG_BENCHMARK_DATASET_PATH }}
+
+            RAG_REDIS_URL=${{ secrets.RAG_REDIS_URL }}
+            RAG_RATE_LIMIT_DOCS=${{ vars.RAG_RATE_LIMIT_DOCS }}
+            RAG_RATE_LIMIT_QUERIES=${{ vars.RAG_RATE_LIMIT_QUERIES }}
+            RAG_RATE_LIMIT_EXEMPT_EMAILS=${{ vars.RAG_RATE_LIMIT_EXEMPT_EMAILS }}
           flags: >-
             --allow-unauthenticated
             --min-instances=0

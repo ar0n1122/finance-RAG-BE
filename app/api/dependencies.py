@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from app.retrieval.hybrid import HybridRetriever
     from app.storage.cloud_storage import CloudStorageClient
     from app.storage.firestore import FirestoreClient
+    from app.storage.redis_client import RedisClient
 
 logger = get_logger(__name__)
 
@@ -276,6 +277,19 @@ def get_ragas_evaluator() -> "RAGASEvaluator":
     from app.evaluation.ragas_eval import RAGASEvaluator
 
     return RAGASEvaluator()
+
+
+@functools.lru_cache
+def get_redis_client() -> "RedisClient":
+    """Return the shared async Redis client (fail-safe: no-op if URL is blank)."""
+    from app.storage.redis_client import RedisClient
+
+    settings = get_settings()
+    # A blank redis_url disables Redis — callers must handle RedisUnavailableError.
+    url = settings.redis_url or "redis://localhost:6379/0"
+    client = RedisClient(url=url)
+    logger.info("redis_client_created", url=url)
+    return client
 
 
 # ── Health verification ───────────────────────────────────────────────────────
