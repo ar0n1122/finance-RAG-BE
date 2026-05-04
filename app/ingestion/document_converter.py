@@ -76,6 +76,7 @@ class DocumentConverter:
 
             settings = get_settings()
             slim = settings.docling_mode == "slim"
+            medium = settings.docling_mode == "medium"
 
             # ── Build PDF pipeline options ────────────────────────────────
             pipeline_options = PdfPipelineOptions()
@@ -83,7 +84,7 @@ class DocumentConverter:
             # Table structure — critical for financial reports
             pipeline_options.do_table_structure = settings.docling_do_table_structure
             if settings.docling_do_table_structure:
-                # slim mode uses FAST (smaller model footprint)
+                # slim mode forces FAST; medium/full respect the config setting
                 if slim:
                     mode = TableFormerMode.FAST
                 else:
@@ -152,6 +153,22 @@ class DocumentConverter:
                 logger.info(
                     "docling_slim_mode",
                     hint="batch=1, images_scale=0.25, force_backend_text=True, table_mode=fast",
+                )
+            elif medium:
+                # ── Medium-mode: speed + accuracy sweet spot ──────────────
+                # batch=2 → 2× faster than slim (270 pages → 135 iterations)
+                # force_backend_text keeps RAM safe (~800-900 MB peak)
+                # table_mode follows config (ACCURATE by default) — better
+                # cell detection than slim's forced FAST, with no extra RAM
+                # cost because force_backend_text already saves the headroom.
+                pipeline_options.layout_batch_size = 2
+                pipeline_options.table_batch_size = 2
+                pipeline_options.ocr_batch_size = 2
+                pipeline_options.images_scale = 0.25
+                pipeline_options.force_backend_text = True
+                logger.info(
+                    "docling_medium_mode",
+                    hint="batch=2, images_scale=0.25, force_backend_text=True, table_mode=config",
                 )
             else:
                 pipeline_options.images_scale = settings.docling_images_scale

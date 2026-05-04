@@ -106,6 +106,7 @@ jobs:
             RAG_CHUNK_SIZE=${{ vars.RAG_CHUNK_SIZE }}
             RAG_CHUNK_OVERLAP=${{ vars.RAG_CHUNK_OVERLAP }}
             RAG_MIN_CHUNK_CHARS=${{ vars.RAG_MIN_CHUNK_CHARS }}
+            RAG_MAX_CHUNKS_PER_DOCUMENT=${{ vars.RAG_MAX_CHUNKS_PER_DOCUMENT }}
             RAG_RAG_STRATEGY=${{ vars.RAG_RAG_STRATEGY }}
             RAG_PROMPT_VERSION=${{ vars.RAG_PROMPT_VERSION }}
 

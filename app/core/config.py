@@ -196,12 +196,15 @@ class Settings(BaseSettings):
     reranker_api_format: Literal["openai", "ollama"] = "openai"
 
     # ── PDF Conversion (Docling) ───────────────────────────────────────────────
-    # "full" = all models loaded, batch_size=4, best accuracy (~1.5 GB RAM)
-    # "slim" = same Docling pipeline but with aggressive memory-saving knobs:
+    # "full"   = all models loaded, batch_size=4, best accuracy (~1.5 GB RAM)
+    # "medium" = batch_size=2, force_backend_text=True, table_mode follows config
+    #            (~800-900 MB RAM). Sweet spot: 2× faster than slim, more
+    #            accurate tables than slim (ACCURATE vs forced FAST). Safe at 2Gi.
+    # "slim"   = same Docling pipeline but with aggressive memory-saving knobs:
     #          batch_size=1, images_scale=0.25, table_mode=fast,
     #          force_backend_text=True (skip layout-model text extraction)
     #          Peak ~600–800 MB in subprocess, API server stays at ~200 MB.
-    docling_mode: Literal["full", "slim"] = "full"
+    docling_mode: Literal["full", "medium", "slim"] = "full"
 
     docling_do_ocr: bool = False
     docling_do_table_structure: bool = True
@@ -220,6 +223,10 @@ class Settings(BaseSettings):
     chunk_size: int = 1024
     chunk_overlap: int = 128
     min_chunk_chars: int = 60
+    # Hard cap on chunks per document. Docling triplet-format can produce
+    # 20k+ chunks from table-heavy financial PDFs; this prevents runaway
+    # embedding API costs and processing time. 0 = no cap.
+    max_chunks_per_document: int = 10000
 
     # ── RAG Pipeline ──────────────────────────────────────────────────────────
     rag_strategy: RAGStrategy = RAGStrategy.ADAPTIVE
