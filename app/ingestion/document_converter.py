@@ -98,8 +98,8 @@ class DocumentConverter:
                     do_cell_matching=settings.docling_do_cell_matching,
                 )
 
-            # OCR — enable for scanned PDFs
-            pipeline_options.do_ocr = settings.docling_do_ocr
+            # OCR — permanently disabled; programmatic PDFs have reliable text layer
+            pipeline_options.do_ocr = False
 
             # Timeout — prevents runaway parsing on malformed PDFs
             pipeline_options.document_timeout = settings.docling_document_timeout
@@ -126,6 +126,30 @@ class DocumentConverter:
                 )
             except ImportError:
                 logger.debug("accelerator_options_not_available")
+
+            # ── Select layout model ────────────────────────────────────
+            try:
+                from docling.datamodel.pipeline_options import (
+                    LayoutOptions,
+                    DOCLING_LAYOUT_HERON, DOCLING_LAYOUT_HERON_101,
+                    DOCLING_LAYOUT_EGRET_MEDIUM, DOCLING_LAYOUT_EGRET_LARGE,
+                    DOCLING_LAYOUT_EGRET_XLARGE, DOCLING_LAYOUT_V2,
+                )
+                _layout_map = {
+                    "heron"        : DOCLING_LAYOUT_HERON,
+                    "heron_101"    : DOCLING_LAYOUT_HERON_101,
+                    "egret_medium" : DOCLING_LAYOUT_EGRET_MEDIUM,
+                    "egret_large"  : DOCLING_LAYOUT_EGRET_LARGE,
+                    "egret_xlarge" : DOCLING_LAYOUT_EGRET_XLARGE,
+                    "v2"           : DOCLING_LAYOUT_V2,
+                }
+                _layout_spec = _layout_map.get(
+                    settings.docling_layout_model, DOCLING_LAYOUT_HERON
+                )
+                pipeline_options.layout_options = LayoutOptions(model_spec=_layout_spec)
+                logger.debug("docling_layout_model", model=settings.docling_layout_model)
+            except (ImportError, AttributeError):
+                pass  # older Docling — default layout model used
 
             # Disable features we don't need for financial docs
             pipeline_options.generate_page_images = False
@@ -171,7 +195,7 @@ class DocumentConverter:
                     hint="batch=2, images_scale=0.25, force_backend_text=True, table_mode=config",
                 )
             else:
-                pipeline_options.images_scale = settings.docling_images_scale
+                pipeline_options.images_scale = 0.5
 
             # ── Create converter with format-specific options ─────────────
             self._converter = _DoclingDC(
@@ -186,11 +210,12 @@ class DocumentConverter:
             logger.info(
                 "docling_converter_ready",
                 mode=settings.docling_mode,
-                do_ocr=settings.docling_do_ocr,
+                layout_model=settings.docling_layout_model,
                 table_mode="fast" if slim else settings.docling_table_mode,
                 do_table_structure=settings.docling_do_table_structure,
                 timeout=settings.docling_document_timeout,
                 device=settings.docling_device,
+                pages_per_batch=settings.docling_pages_per_batch,
             )
         except ImportError:
             self._converter = None

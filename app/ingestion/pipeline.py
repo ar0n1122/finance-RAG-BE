@@ -259,6 +259,51 @@ class IngestionPipeline:
 
     # ── Subprocess-based PDF conversion ───────────────────────────────────────
 
+    def _run_worker(
+        self,
+        pdf_path: Path,
+        output_path: Path,
+        document_id: str,
+        filename: str,
+        timeout: float,
+    ) -> dict:
+        """
+        Spawn one docling_worker subprocess for *pdf_path*.  Returns the
+        parsed JSON dict on success; raises ``IngestionError`` on failure.
+        """
+        backend_root = Path(__file__).resolve().parent.parent.parent
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m", "app.ingestion.docling_worker",
+                str(pdf_path),
+                str(output_path),
+                document_id,
+                filename,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(backend_root),
+        )
+
+        if not output_path.exists():
+            stderr_tail = (result.stderr or "")[-1000:]
+            raise IngestionError(
+                f"Worker produced no output (exit={result.returncode}). "
+                f"stderr: {stderr_tail}"
+            )
+
+        raw = json.loads(output_path.read_text(encoding="utf-8"))
+
+        if raw.get("status") != "success":
+            error_msg = raw.get("error", "unknown worker error")
+            error_type = raw.get("error_type", "")
+            raise IngestionError(
+                f"Subprocess conversion failed ({error_type}): {error_msg}"
+            )
+        return raw
+
     def _convert_and_chunk_subprocess(
         self,
         document_id: str,
@@ -266,116 +311,148 @@ class IngestionPipeline:
         content: bytes,
     ) -> tuple[list[Chunk], int]:
         """
-        Run Docling conversion + chunking in an isolated subprocess.
+        Run Docling conversion + chunking in an isolated subprocess per batch.
+
+        When ``docling_pages_per_batch`` > 0 and the PDF has more pages than
+        that threshold, the PDF is split into smaller files and one fresh
+        subprocess is spawned per batch.  Each subprocess exits after its
+        batch — releasing all ONNX C++ memory — so peak RAM is capped at
+        one batch worth instead of accumulating across the whole document.
 
         Returns ``(chunks, total_pages)``.
-
-        The subprocess loads Docling models, processes the PDF, writes JSON
-        output, and exits — releasing all model memory.  If it OOMs or
-        crashes, only the worker process dies; the API server is unaffected.
         """
         # Ensure the PDF is on disk for the subprocess to read
         pdf_path = self._cache_path(document_id, filename)
         if not pdf_path.exists():
             pdf_path.write_bytes(content)
 
-        output_path = pdf_path.with_suffix(".chunks.json")
-
-        # The worker module lives at app/ingestion/docling_worker.py
-        # Run from the backend root so `python -m app.ingestion.docling_worker` works
-        backend_root = Path(__file__).resolve().parent.parent.parent
-
         timeout = self._settings.docling_document_timeout or 1800
+        pages_per_batch = self._settings.docling_pages_per_batch
+
+        # ── Count pages without loading Docling ───────────────────────────
+        total_pages = 0
+        split_paths: list[Path] = []
+        split_dir: Path | None = None
+        try:
+            import pypdfium2 as _pdfium
+            src_doc = _pdfium.PdfDocument(str(pdf_path))
+            total_pages = len(src_doc)
+
+            if pages_per_batch > 0 and total_pages > pages_per_batch:
+                split_dir = Path(tempfile.mkdtemp(prefix="rag_pdf_split_"))
+                for idx, start0 in enumerate(range(0, total_pages, pages_per_batch)):
+                    end0 = min(start0 + pages_per_batch, total_pages)
+                    chunk_doc = _pdfium.PdfDocument.new()
+                    chunk_doc.import_pages(src_doc, list(range(start0, end0)))
+                    tmp_path = split_dir / f"chunk_{idx:03d}.pdf"
+                    chunk_doc.save(str(tmp_path))
+                    chunk_doc.close()
+                    split_paths.append(tmp_path)
+                src_doc.close()
+                logger.info(
+                    "pdf_split_for_batching",
+                    document_id=document_id,
+                    total_pages=total_pages,
+                    batches=len(split_paths),
+                    pages_per_batch=pages_per_batch,
+                )
+            else:
+                src_doc.close()
+        except ImportError:
+            logger.debug("pypdfium2_not_available_skipping_split")
+
+        use_batching = bool(split_paths)
+        batch_files = split_paths if use_batching else [pdf_path]
 
         logger.info(
             "subprocess_convert_start",
             document_id=document_id,
             filename=filename,
-            pdf_path=str(pdf_path),
+            batches=len(batch_files),
+            total_pages=total_pages,
             timeout=timeout,
         )
 
+        all_chunks: list[Chunk] = []
+        global_chunk_index = 0
+
         try:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m", "app.ingestion.docling_worker",
-                    str(pdf_path),
-                    str(output_path),
-                    document_id,
-                    filename,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=str(backend_root),
-            )
+            for i, batch_pdf in enumerate(batch_files):
+                output_path = batch_pdf.with_suffix(f".batch{i}.json")
+                try:
+                    raw = self._run_worker(
+                        batch_pdf, output_path, document_id, filename, timeout
+                    )
+                    # total_pages from the first (or only) batch is authoritative
+                    if i == 0 and not use_batching:
+                        total_pages = raw.get("total_pages", total_pages)
+                    elif not use_batching:
+                        total_pages = raw.get("total_pages", total_pages)
 
-            # ── Read output ───────────────────────────────────────────────
-            if not output_path.exists():
-                stderr_tail = (result.stderr or "")[-1000:]
-                raise IngestionError(
-                    f"Worker produced no output (exit={result.returncode}). "
-                    f"stderr: {stderr_tail}"
-                )
+                    for c in raw["chunks"]:
+                        all_chunks.append(Chunk(
+                            chunk_id=c["chunk_id"],
+                            text=c["text"],
+                            enriched_text=c.get("enriched_text"),
+                            content_type=ContentType(c["content_type"]),
+                            document_id=c["document_id"],
+                            page=c["page"],
+                            section=c.get("section"),
+                            chunk_index=global_chunk_index,
+                            token_count=c["token_count"],
+                            metadata=c.get("metadata", {}),
+                        ))
+                        global_chunk_index += 1
 
-            raw = json.loads(output_path.read_text(encoding="utf-8"))
+                    logger.info(
+                        "subprocess_batch_complete",
+                        document_id=document_id,
+                        batch=i + 1,
+                        of=len(batch_files),
+                        batch_chunks=len(raw["chunks"]),
+                    )
+                except subprocess.TimeoutExpired:
+                    logger.error(
+                        "subprocess_batch_timeout",
+                        document_id=document_id,
+                        batch=i + 1,
+                        timeout=timeout,
+                    )
+                    raise IngestionError(
+                        f"PDF batch {i + 1}/{len(batch_files)} timed out after {timeout}s"
+                    )
+                except json.JSONDecodeError as exc:
+                    raise IngestionError(
+                        f"Worker batch {i + 1} output is not valid JSON: {exc}"
+                    ) from exc
+                finally:
+                    try:
+                        output_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
-            if raw.get("status") != "success":
-                error_msg = raw.get("error", "unknown worker error")
-                error_type = raw.get("error_type", "")
-                raise IngestionError(
-                    f"Subprocess conversion failed ({error_type}): {error_msg}"
-                )
-
-            # ── Reconstruct Chunk objects ─────────────────────────────────
-            chunks = [
-                Chunk(
-                    chunk_id=c["chunk_id"],
-                    text=c["text"],
-                    enriched_text=c.get("enriched_text"),
-                    content_type=ContentType(c["content_type"]),
-                    document_id=c["document_id"],
-                    page=c["page"],
-                    section=c.get("section"),
-                    chunk_index=c["chunk_index"],
-                    token_count=c["token_count"],
-                    metadata=c.get("metadata", {}),
-                )
-                for c in raw["chunks"]
-            ]
-
-            total_pages = raw.get("total_pages", 0)
-
-            logger.info(
-                "subprocess_convert_complete",
-                document_id=document_id,
-                total_chunks=len(chunks),
-                total_pages=total_pages,
-                exit_code=result.returncode,
-            )
-
-            return chunks, total_pages
-
-        except subprocess.TimeoutExpired:
-            logger.error(
-                "subprocess_convert_timeout",
-                document_id=document_id,
-                timeout=timeout,
-            )
-            raise IngestionError(
-                f"PDF conversion timed out after {timeout}s for '{filename}'"
-            )
-        except json.JSONDecodeError as exc:
-            raise IngestionError(
-                f"Worker output is not valid JSON for '{filename}': {exc}"
-            ) from exc
         finally:
-            # Always clean up the output JSON (success or failure)
-            try:
-                output_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            # Clean up split temp files
+            if split_dir is not None:
+                for p in split_paths:
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                try:
+                    split_dir.rmdir()
+                except OSError:
+                    pass
+
+        logger.info(
+            "subprocess_convert_complete",
+            document_id=document_id,
+            total_chunks=len(all_chunks),
+            total_pages=total_pages,
+            batches=len(batch_files),
+        )
+
+        return all_chunks, total_pages
 
     def ingest(
         self,
