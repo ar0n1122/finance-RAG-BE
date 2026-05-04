@@ -8,15 +8,18 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.api.dependencies import get_firestore_client
+from app.api.dependencies import get_firestore_client, get_redis_client
 from app.auth.dependencies import OptionalUser
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.responses import (
     OperationBreakdown,
     UsageRecordResponse,
     UsageSummaryResponse,
     UsageEventResponse,
+    UserLimitsResponse,
 )
+from app.storage.redis_client import RedisUnavailableError
 
 logger = get_logger(__name__)
 
@@ -94,3 +97,43 @@ async def usage_history(
         )
         for r in records
     ]
+
+
+@router.get("/usage/limits", response_model=UserLimitsResponse)
+async def usage_limits(user: OptionalUser) -> UserLimitsResponse:
+    """Return the rate-limit config and the user's current counters from Redis.
+
+    Always returns the configured limits so an exempt user can still see what
+    limits apply to regular accounts. ``is_exempt=True`` signals the UI to
+    present the matrix in informational-only mode.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    settings = get_settings()
+    redis = get_redis_client()
+
+    # ── Exemption check ───────────────────────────────────────────────────────
+    try:
+        is_exempt = await redis.sismember("rl:exempt", user.email)
+    except RedisUnavailableError:
+        is_exempt = False
+
+    # ── Current counters ──────────────────────────────────────────────────────
+    try:
+        doc_count = await redis.get_int(f"rl:docs:{user.user_id}")
+    except RedisUnavailableError:
+        doc_count = 0
+
+    try:
+        query_count = await redis.get_int(f"rl:queries:{user.user_id}")
+    except RedisUnavailableError:
+        query_count = 0
+
+    return UserLimitsResponse(
+        doc_limit=settings.rate_limit_docs,
+        query_limit=settings.rate_limit_queries,
+        doc_count=doc_count,
+        query_count=query_count,
+        is_exempt=is_exempt,
+    )

@@ -304,3 +304,13 @@ class UsageSummaryResponse(BaseModel):
     breakdown_by_model: dict[str, OperationBreakdown] = Field(default_factory=dict)
     breakdown_by_operation: dict[str, OperationBreakdown] = Field(default_factory=dict)
     daily_costs: dict[str, float] = Field(default_factory=dict)
+
+
+class UserLimitsResponse(BaseModel):
+    """Per-user rate-limit info — counters from Redis + config limits."""
+
+    doc_limit: int
+    query_limit: int
+    doc_count: int     # what the rate limiter actually uses (Redis counter)
+    query_count: int   # what the rate limiter actually uses (Redis counter)
+    is_exempt: bool    # True if user is in the rl:exempt set

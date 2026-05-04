@@ -217,22 +217,26 @@ class FirestoreClient:
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return usage records for a user, newest first."""
+        """Return usage records for a user, newest first.
+
+        Intentionally avoids order_by on a different field than the where clause
+        to prevent Firestore composite-index errors in environments where the
+        index has not been provisioned.  Sorting is done in Python instead.
+        """
         query = self._collection("usage_records").where(
             filter=firestore.FieldFilter("user_id", "==", user_id),
         )
+        records = [{**d.to_dict(), "id": d.id} for d in query.stream()]
+
+        # Apply optional date filters in Python
         if start_date:
-            query = query.where(
-                filter=firestore.FieldFilter("created_at", ">=", start_date),
-            )
+            records = [r for r in records if r.get("created_at", "") >= start_date]
         if end_date:
-            query = query.where(
-                filter=firestore.FieldFilter("created_at", "<=", end_date),
-            )
-        query = query.order_by(
-            "created_at", direction=firestore.Query.DESCENDING,
-        ).limit(limit)
-        return [{**d.to_dict(), "id": d.id} for d in query.stream()]
+            records = [r for r in records if r.get("created_at", "") <= end_date]
+
+        # Sort newest-first and apply limit in Python
+        records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return records[:limit]
 
     def get_usage_summary(self, user_id: str) -> dict[str, Any]:
         """Aggregate usage stats for a user across all their records."""
