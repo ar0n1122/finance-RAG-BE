@@ -207,7 +207,7 @@ class Settings(BaseSettings):
     docling_do_table_structure: bool = True
     docling_table_mode: Literal["fast", "accurate"] = "accurate"
     docling_do_cell_matching: bool = True
-    docling_document_timeout: float | None = 600.0  # seconds per document; None = no limit
+    docling_document_timeout: float | None = 1800.0  # seconds per document; None = no limit
     docling_num_threads: int = 1   # keep low to avoid OOM on CPU
     docling_device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
     docling_images_scale: float = 0.5  # page render scale; lower = less RAM

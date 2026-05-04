@@ -274,7 +274,7 @@ class IngestionPipeline:
         # Run from the backend root so `python -m app.ingestion.docling_worker` works
         backend_root = Path(__file__).resolve().parent.parent.parent
 
-        timeout = self._settings.docling_document_timeout or 900
+        timeout = self._settings.docling_document_timeout or 1800
 
         logger.info(
             "subprocess_convert_start",
