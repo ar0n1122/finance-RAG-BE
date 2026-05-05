@@ -17,8 +17,12 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 RUN pip install --no-cache-dir --upgrade pip && \
-    # Install CPU-only PyTorch first so docling doesn't pull the CUDA variant (~1.7 GB savings)
-    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    # Install CPU-only PyTorch + torchvision from the CPU wheel index.
+    # torchvision from PyPI is a CUDA build — its C++ extension (_C) fails to load
+    # without CUDA libs, so torchvision::nms is never registered, which breaks
+    # docling's import chain (granite_vision → AutoProcessor → torchvision).
+    # Installing from the CPU index gives a CUDA-free wheel that loads cleanly.
+    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir .
 
 
@@ -52,15 +56,31 @@ mkdir -p "$HF_HOME" "$DOCLING_CACHE_DIR"
 # Do NOT add '|| true' — a silently broken image would set HF_HUB_OFFLINE=1
 # but have no cached models, causing LocalEntryNotFoundError at runtime.
 python -c "
-# Only cache the tokenizer used by HybridChunker in the main API process.
-# Docling ONNX layout/table models are downloaded lazily inside the docling
-# subprocess worker on first PDF conversion — no DocumentConverter import needed here.
-# Importing DocumentConverter in docling>=2.92 triggers asr_pipeline -> granite_vision
-# -> AutoProcessor which fails with CPU-only torch (torchvision::nms missing).
+# With CPU torchvision (installed from PyTorch's CPU wheel index) the full
+# docling import chain works: granite_vision → AutoProcessor → torchvision.
+# Pre-download the layout (Heron) + table (TableFormer) ONNX models so the
+# subprocess worker never has to reach HuggingFace at runtime.
+import sys
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter as _DC, PdfFormatOption
+opts = PdfPipelineOptions()
+opts.do_ocr = False
+opts.do_chart_extraction = False
+opts.do_code_enrichment = False
+opts.do_formula_enrichment = False
+opts.generate_page_images = False
+opts.generate_picture_images = False
+opts.generate_parsed_pages = False
+print('Downloading Docling layout/table ONNX models...', flush=True)
+_DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
+print('Docling ONNX models OK', flush=True)
+# sentence-transformers/all-MiniLM-L6-v2 tokenizer required by HybridChunker
+# in the main API process (get_ingestion_pipeline → DoclingHybridChunker.__init__).
 print('Downloading sentence-transformers/all-MiniLM-L6-v2 tokenizer...', flush=True)
 from docling_core.transforms.chunker.tokenizer.huggingface import get_default_tokenizer
 get_default_tokenizer()
-print('Tokenizer cached OK', flush=True)
+print('All models cached OK', flush=True)
 "
 echo 'Pre-download complete'
 chown -R appuser:appuser /home/appuser/.cache 2>/dev/null || true

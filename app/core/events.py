@@ -20,20 +20,36 @@ from app.core.logging import get_logger, setup_logging
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Pre-download the sentence-transformers/all-MiniLM-L6-v2 tokenizer used by
-# docling_core HybridChunker (get_default_tokenizer).  This is the only
-# HuggingFace asset needed in the main API process.
+# Pre-download Docling's layout/table ONNX models + sentence-transformers
+# tokenizer.  Runs in a subprocess to keep the API server heap clean.
 #
-# Docling ONNX layout/table models are downloaded lazily inside the dedicated
-# docling subprocess worker on first PDF conversion — no DocumentConverter
-# import is needed here.  Importing it in docling>=2.92 pulls in AsrPipeline
-# -> granite_vision -> AutoProcessor -> torchvision, which fails on CPU-only
-# torch builds (RuntimeError: operator torchvision::nms does not exist).
+# In the Docker image, models are already cached at build time (Dockerfile
+# RUN step), so this subprocess exits in <5 s on Cloud Run.
+# On local dev / first run, it downloads ~300 MB of ONNX weights.
+#
+# Note: torchvision must be the CPU wheel (not PyPI's CUDA build) for the
+# import chain to work: granite_vision → AutoProcessor → torchvision.
+# The Dockerfile installs it from https://download.pytorch.org/whl/cpu.
 # ---------------------------------------------------------------------------
 _DOCLING_PRELOAD_SCRIPT = (
+    # 1. Pre-download layout (Heron) + table (TableFormer) ONNX models
+    "from docling.datamodel.base_models import InputFormat;"
+    "from docling.datamodel.pipeline_options import PdfPipelineOptions;"
+    "from docling.document_converter import DocumentConverter as DC, PdfFormatOption;"
+    "opts = PdfPipelineOptions();"
+    "opts.do_ocr = False;"
+    "opts.do_chart_extraction = False;"
+    "opts.do_code_enrichment = False;"
+    "opts.do_formula_enrichment = False;"
+    "opts.generate_page_images = False;"
+    "opts.generate_picture_images = False;"
+    "opts.generate_parsed_pages = False;"
+    "DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)});"
+    # 2. Pre-download sentence-transformers/all-MiniLM-L6-v2 tokenizer
+    # (used by HybridChunker for token counting in the main API process)
     "from docling_core.transforms.chunker.tokenizer.huggingface import get_default_tokenizer;"
     "get_default_tokenizer();"
-    "print('docling_tokenizer_ok', flush=True)"
+    "print('docling_models_ok', flush=True)"
 )
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent  # backend/
@@ -41,12 +57,12 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent  # backend/
 
 async def _preload_docling_models() -> None:
     """
-    Ensure the sentence-transformers tokenizer is present in the local cache.
+    Ensure Docling ONNX models and the HuggingFace tokenizer are cached locally.
 
-    Runs a short-lived subprocess (keeping the API server's heap clean) that
-    calls get_default_tokenizer().  On first run this triggers a small download
-    from HuggingFace; on subsequent runs it exits immediately because the
-    tokenizer is already cached.
+    Runs a short-lived subprocess that initialises docling's DocumentConverter
+    (downloading layout + table ONNX weights on first run) and the
+    sentence-transformers tokenizer used by HybridChunker.  On Cloud Run
+    both are already in the image cache, so this exits in < 5 s.
 
     After the subprocess exits (success or failure), HF_HUB_OFFLINE=1 and
     TRANSFORMERS_OFFLINE=1 are written into the parent process environment so
