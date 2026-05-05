@@ -203,7 +203,7 @@ class IngestionPipeline:
             self._ensure_collection()
 
             # 4. Embed + index text/table chunks
-            vectors_indexed = self._embed_and_index(chunks)
+            vectors_indexed = self._embed_and_index(chunks, document_id=document_id)
             self._update_progress(document_id, 90, "finalizing")
 
             elapsed = time.perf_counter() - start
@@ -363,21 +363,47 @@ class IngestionPipeline:
 
         use_batching = bool(split_paths)
         batch_files = split_paths if use_batching else [pdf_path]
+        n_batches = len(batch_files)
 
         logger.info(
             "subprocess_convert_start",
             document_id=document_id,
             filename=filename,
-            batches=len(batch_files),
+            batches=n_batches,
             total_pages=total_pages,
             timeout=timeout,
         )
+
+        # Progress budget: converting = 5% → 38%  (33 points spread across batches)
+        # Embedding will use 40% → 88%, finalizing 90%, complete 100%.
+        _CONV_START = 5
+        _CONV_END   = 38
 
         all_chunks: list[Chunk] = []
         global_chunk_index = 0
 
         try:
             for i, batch_pdf in enumerate(batch_files):
+                # Update Firestore before spawning so UI shows forward motion
+                batch_progress = _CONV_START + round(
+                    (_CONV_END - _CONV_START) * i / n_batches
+                )
+                batch_label = (
+                    f"converting pages {i * pages_per_batch + 1}–"
+                    f"{min((i + 1) * pages_per_batch, total_pages)} of {total_pages}"
+                    if use_batching
+                    else "converting"
+                )
+                self._update_progress(document_id, batch_progress, batch_label)
+                logger.info(
+                    "batch_start",
+                    document_id=document_id,
+                    batch=i + 1,
+                    of=n_batches,
+                    progress=batch_progress,
+                    label=batch_label,
+                )
+
                 output_path = batch_pdf.with_suffix(f".batch{i}.json")
                 try:
                     raw = self._run_worker(
@@ -408,8 +434,9 @@ class IngestionPipeline:
                         "subprocess_batch_complete",
                         document_id=document_id,
                         batch=i + 1,
-                        of=len(batch_files),
+                        of=n_batches,
                         batch_chunks=len(raw["chunks"]),
+                        total_chunks_so_far=global_chunk_index,
                     )
                 except subprocess.TimeoutExpired:
                     logger.error(
@@ -592,7 +619,12 @@ class IngestionPipeline:
 
     # ── Embedding + indexing ──────────────────────────────────────────────────
 
-    def _embed_and_index(self, chunks: list[Chunk], batch_size: int | None = None) -> int:
+    def _embed_and_index(
+        self,
+        chunks: list[Chunk],
+        batch_size: int | None = None,
+        document_id: str = "",
+    ) -> int:
         """Embed and upsert text/table chunks to Qdrant.  Returns count."""
         if not chunks:
             return 0
@@ -600,8 +632,23 @@ class IngestionPipeline:
         if batch_size is None:
             batch_size = self._settings.embedding_batch_size
 
+        # Progress budget: embedding = 40% → 88%  (48 points across embed batches)
+        _EMB_START = 40
+        _EMB_END   = 88
+        n_embed_batches = (len(chunks) + batch_size - 1) // batch_size
+
         total = 0
         for i in range(0, len(chunks), batch_size):
+            batch_num = i // batch_size
+            if document_id:
+                emb_progress = _EMB_START + round(
+                    (_EMB_END - _EMB_START) * batch_num / n_embed_batches
+                )
+                self._update_progress(
+                    document_id,
+                    emb_progress,
+                    f"embedding {min(i + batch_size, len(chunks))}/{len(chunks)} chunks",
+                )
             batch = chunks[i : i + batch_size]
             texts: list[str] = []
             for c in batch:
