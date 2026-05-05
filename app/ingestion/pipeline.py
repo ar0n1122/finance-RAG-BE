@@ -161,15 +161,23 @@ class IngestionPipeline:
             if content is not None:
                 logger.debug("process_using_cache", document_id=document_id)
             else:
+                _t_dl = time.perf_counter()
                 logger.info("process_downloading_from_gcs", document_id=document_id)
                 content = self._gcs.download_bytes(f"raw/{document_id}/{filename}")
                 self._write_cache(document_id, filename, content)
+                logger.info(
+                    "gcs_download_complete",
+                    document_id=document_id,
+                    size_kb=round(len(content) / 1024, 1),
+                    elapsed_s=round(time.perf_counter() - _t_dl, 2),
+                )
 
         logger.info("processing_started", document_id=document_id, filename=filename)
         self._update_progress(document_id, 5, "converting")
 
         try:
             # 1+2. Convert PDF → chunks (subprocess for PDFs, in-process for others)
+            _t_conv = time.perf_counter()
             if content_type == "application/pdf":
                 chunks, total_pages = self._convert_and_chunk_subprocess(
                     document_id=document_id,
@@ -186,6 +194,12 @@ class IngestionPipeline:
                 chunks = self._chunker.chunk(parsed)
                 total_pages = parsed.total_pages
 
+            logger.info(
+                "conversion_phase_complete",
+                document_id=document_id,
+                chunks=len(chunks),
+                elapsed_s=round(time.perf_counter() - _t_conv, 2),
+            )
             self._update_progress(document_id, 40, "embedding")
 
             # Cap chunks to prevent runaway embedding costs on table-heavy PDFs
@@ -203,7 +217,14 @@ class IngestionPipeline:
             self._ensure_collection()
 
             # 4. Embed + index text/table chunks
+            _t_emb = time.perf_counter()
             vectors_indexed = self._embed_and_index(chunks, document_id=document_id)
+            logger.info(
+                "embedding_phase_complete",
+                document_id=document_id,
+                vectors=vectors_indexed,
+                elapsed_s=round(time.perf_counter() - _t_emb, 2),
+            )
             self._update_progress(document_id, 90, "finalizing")
 
             elapsed = time.perf_counter() - start
@@ -405,6 +426,7 @@ class IngestionPipeline:
                 )
 
                 output_path = batch_pdf.with_suffix(f".batch{i}.json")
+                _t_batch = time.perf_counter()
                 try:
                     raw = self._run_worker(
                         batch_pdf, output_path, document_id, filename, timeout
@@ -437,6 +459,7 @@ class IngestionPipeline:
                         of=n_batches,
                         batch_chunks=len(raw["chunks"]),
                         total_chunks_so_far=global_chunk_index,
+                        elapsed_s=round(time.perf_counter() - _t_batch, 2),
                     )
                 except subprocess.TimeoutExpired:
                     logger.error(

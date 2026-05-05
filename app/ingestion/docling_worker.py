@@ -39,6 +39,8 @@ from pathlib import Path
 
 def _run(pdf_path: str, output_path: str, document_id: str, filename: str) -> None:
     """Execute Docling conversion + chunking, write JSON result."""
+    import time as _time
+    _t0 = _time.perf_counter()
 
     from app.core.config import get_settings
     from app.ingestion.chunking.docling_hybrid import DoclingHybridChunker
@@ -46,7 +48,9 @@ def _run(pdf_path: str, output_path: str, document_id: str, filename: str) -> No
 
     settings = get_settings()
 
+    _t_imports = _time.perf_counter()
     converter = DocumentConverter()
+    _t_model_load = _time.perf_counter()
 
     chunker = DoclingHybridChunker(
         max_tokens=settings.chunk_size,
@@ -54,14 +58,27 @@ def _run(pdf_path: str, output_path: str, document_id: str, filename: str) -> No
     )
 
     # ── Convert ───────────────────────────────────────────────────────────
+    _t_conv_start = _time.perf_counter()
     parsed = converter.convert(
         source=Path(pdf_path),
         document_id=document_id,
         filename=filename,
     )
+    _t_conv_end = _time.perf_counter()
 
     # ── Chunk ─────────────────────────────────────────────────────────────
     chunks = chunker.chunk(parsed)
+    _t_chunk_end = _time.perf_counter()
+
+    print(
+        f"[worker_timing] imports={_t_imports - _t0:.2f}s "
+        f"model_load={_t_model_load - _t_imports:.2f}s "
+        f"conversion={_t_conv_end - _t_conv_start:.2f}s "
+        f"chunking={_t_chunk_end - _t_conv_end:.2f}s "
+        f"total={_t_chunk_end - _t0:.2f}s "
+        f"pages={parsed.total_pages} chunks={len(chunks)}",
+        flush=True,
+    )
 
     # ── Serialize ─────────────────────────────────────────────────────────
     output = {

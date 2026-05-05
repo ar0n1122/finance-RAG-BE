@@ -59,7 +59,16 @@ class DocumentConverter:
     in the AST but not separately embedded.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, skip_models: bool = False) -> None:
+        if skip_models:
+            # Caller explicitly requested a lightweight stub — no ONNX models loaded.
+            # Used by the main FastAPI process where PDFs are always routed to
+            # a subprocess worker; loading models here would waste 1–2 GB of RAM.
+            # Non-PDF content falls through to _fallback_convert() as normal.
+            self._converter = None
+            self._available = False
+            return
+
         try:
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import (
