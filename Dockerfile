@@ -48,6 +48,9 @@ ENV DOCLING_CACHE_DIR=/home/appuser/.cache/docling
 RUN <<'EOF'
 set -e
 mkdir -p "$HF_HOME" "$DOCLING_CACHE_DIR"
+# Hard failure: if either download fails the image build fails.
+# Do NOT add '|| true' — a silently broken image would set HF_HUB_OFFLINE=1
+# but have no cached models, causing LocalEntryNotFoundError at runtime.
 python -c "
 import sys
 from docling.datamodel.base_models import InputFormat
@@ -60,14 +63,15 @@ opts.generate_picture_images = False
 print('Downloading Docling layout/table ONNX models...', flush=True)
 _DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
 print('Docling ONNX models OK', flush=True)
-# sentence-transformers/all-MiniLM-L6-v2 tokenizer is required by docling_core
-# HybridChunker (get_default_tokenizer) and is loaded in the main API process.
-# Must be cached here or every upload fails with a huggingface.co connection error.
+# sentence-transformers/all-MiniLM-L6-v2 tokenizer required by docling_core
+# HybridChunker.get_default_tokenizer() — loaded in the main API process on
+# every server start via get_ingestion_pipeline() (lru_cache, first call only).
 print('Downloading sentence-transformers/all-MiniLM-L6-v2 tokenizer...', flush=True)
 from docling_core.transforms.chunker.tokenizer.huggingface import get_default_tokenizer
 get_default_tokenizer()
-print('Tokenizer OK', flush=True)
-" && echo 'Pre-download complete' || echo 'WARNING: model pre-download failed -- first upload will attempt download at runtime'
+print('All models cached OK', flush=True)
+"
+echo 'Pre-download complete'
 chown -R appuser:appuser /home/appuser/.cache 2>/dev/null || true
 EOF
 
