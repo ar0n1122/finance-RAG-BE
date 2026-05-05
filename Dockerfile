@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
 FROM python:3.12-slim AS builder
 
@@ -32,25 +33,57 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN useradd --create-home --shell /bin/bash appuser
 WORKDIR /home/appuser/app
 
-# Copy application
-COPY app/ ./app/
-
-# Pre-download Docling ML models so subprocess workers skip the HF Hub hit
-# on their first run.  Uses the same DocumentConverter constructor as the worker
-# (most reliable API).  Models land in HF_HOME; we chown them to appuser.
+# ── Pre-download Docling ML models ────────────────────────────────────────────
+# Must happen BEFORE COPY app/ so Docker can cache this expensive layer
+# independently of app code changes.
+#
+# HF_HOME      = huggingface_hub cache (some assets)
+# DOCLING_CACHE_DIR = where Docling itself stores downloaded ONNX/Torch models
+#                    (default: ~/.cache/docling — which would be /root/.cache/docling
+#                     during build, inaccessible to appuser at runtime)
+#
+# We explicitly point both to appuser's home so models survive the USER switch.
 ENV HF_HOME=/home/appuser/.cache/huggingface
-RUN mkdir -p "$HF_HOME" && \
-    ( python -c "from docling.datamodel.base_models import InputFormat; from docling.datamodel.pipeline_options import PdfPipelineOptions; from docling.document_converter import DocumentConverter as _DC, PdfFormatOption; opts=PdfPipelineOptions(); opts.do_ocr=False; opts.generate_page_images=False; opts.generate_picture_images=False; _DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}); print('Docling models cached OK')" \
-    && echo "Model pre-download complete" \
-    || echo "WARNING: Docling model pre-download failed -- models download at first subprocess run" ) ; \
-    chown -R appuser:appuser /home/appuser/.cache 2>/dev/null || true
+ENV DOCLING_CACHE_DIR=/home/appuser/.cache/docling
+RUN <<'EOF'
+set -e
+mkdir -p "$HF_HOME" "$DOCLING_CACHE_DIR"
+python -c "
+import sys
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter as _DC, PdfFormatOption
+opts = PdfPipelineOptions()
+opts.do_ocr = False
+opts.generate_page_images = False
+opts.generate_picture_images = False
+print('Downloading Docling layout/table ONNX models...', flush=True)
+_DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
+print('Docling ONNX models OK', flush=True)
+# sentence-transformers/all-MiniLM-L6-v2 tokenizer is required by docling_core
+# HybridChunker (get_default_tokenizer) and is loaded in the main API process.
+# Must be cached here or every upload fails with a huggingface.co connection error.
+print('Downloading sentence-transformers/all-MiniLM-L6-v2 tokenizer...', flush=True)
+from docling_core.transforms.chunker.tokenizer.huggingface import get_default_tokenizer
+get_default_tokenizer()
+print('Tokenizer OK', flush=True)
+" && echo 'Pre-download complete' || echo 'WARNING: model pre-download failed -- first upload will attempt download at runtime'
+chown -R appuser:appuser /home/appuser/.cache 2>/dev/null || true
+EOF
+
+# Lock HuggingFace to offline mode — models are now in the image cache.
+# Prevents runtime downloads and eliminates huggingface.co connectivity errors.
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+# Copy application (after model download so the layer above is cache-friendly)
+COPY app/ ./app/
 
 # Drop privileges
 USER appuser
 
 # Cloud Run injects PORT (default 8080); the app also reads RAG_PORT.
 ENV PORT=8080
-
-    EXPOSE ${PORT}
+EXPOSE ${PORT}
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
