@@ -54,6 +54,7 @@ jobs:
             RAG_PORT=${{ vars.RAG_PORT }}
             RAG_LOG_LEVEL=${{ vars.RAG_LOG_LEVEL }}
             RAG_ALLOWED_ORIGINS=${{ vars.RAG_ALLOWED_ORIGINS }}
+            HF_HUB_OFFLINE=1
 
             RAG_QDRANT_HOST=${{ vars.RAG_QDRANT_HOST }}
             RAG_QDRANT_PORT=${{ vars.RAG_QDRANT_PORT }}

@@ -217,7 +217,10 @@ def get_ingestion_pipeline() -> "IngestionPipeline":
 
     return IngestionPipeline(
         settings=settings,
-        converter=DocumentConverter(),
+        # skip_models=True: PDFs always processed via subprocess (docling_worker);
+        # loading ONNX models in the main FastAPI process wastes ~1.5 GB RAM.
+        # Non-PDFs fall back to _fallback_convert() (plain-text decode) as before.
+        converter=DocumentConverter(skip_models=True),
         chunker=chunker,
         text_embedder=get_text_embedder(),
         qdrant=get_qdrant_client(),
