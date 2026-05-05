@@ -323,6 +323,15 @@ class IngestionPipeline:
             raise IngestionError(
                 f"Subprocess conversion failed ({error_type}): {error_msg}"
             )
+
+        # Log worker stdout so [worker_timing] lines appear in Cloud Run logs.
+        if result.stdout and result.stdout.strip():
+            logger.info(
+                "worker_output",
+                document_id=document_id,
+                output=result.stdout.strip(),
+            )
+
         return raw
 
     def _convert_and_chunk_subprocess(
