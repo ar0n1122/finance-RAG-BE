@@ -20,26 +20,20 @@ from app.core.logging import get_logger, setup_logging
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# One-liner that initialises Docling's DocumentConverter — which triggers the
-# huggingface_hub model download for layout + table ONNX weights.
-# Must be kept in sync with document_converter.py's pipeline options.
+# Pre-download the sentence-transformers/all-MiniLM-L6-v2 tokenizer used by
+# docling_core HybridChunker (get_default_tokenizer).  This is the only
+# HuggingFace asset needed in the main API process.
+#
+# Docling ONNX layout/table models are downloaded lazily inside the dedicated
+# docling subprocess worker on first PDF conversion — no DocumentConverter
+# import is needed here.  Importing it in docling>=2.92 pulls in AsrPipeline
+# -> granite_vision -> AutoProcessor -> torchvision, which fails on CPU-only
+# torch builds (RuntimeError: operator torchvision::nms does not exist).
 # ---------------------------------------------------------------------------
 _DOCLING_PRELOAD_SCRIPT = (
-    # 1. Pre-download Docling layout + table ONNX models (used by the subprocess worker)
-    "from docling.datamodel.base_models import InputFormat;"
-    "from docling.datamodel.pipeline_options import PdfPipelineOptions;"
-    "from docling.document_converter import DocumentConverter as DC, PdfFormatOption;"
-    "opts = PdfPipelineOptions();"
-    "opts.do_ocr = False;"
-    "opts.do_table_structure = False;"
-    "opts.generate_page_images = False;"
-    "opts.generate_picture_images = False;"
-    "DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)});"
-    # 2. Pre-download sentence-transformers/all-MiniLM-L6-v2 tokenizer
-    # (used by docling_core HybridChunker for token counting — loaded in the main API process)
     "from docling_core.transforms.chunker.tokenizer.huggingface import get_default_tokenizer;"
     "get_default_tokenizer();"
-    "print('docling_models_ok', flush=True)"
+    "print('docling_tokenizer_ok', flush=True)"
 )
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent  # backend/
@@ -47,12 +41,12 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent  # backend/
 
 async def _preload_docling_models() -> None:
     """
-    Ensure Docling ONNX/ML models are present in the local cache.
+    Ensure the sentence-transformers tokenizer is present in the local cache.
 
     Runs a short-lived subprocess (keeping the API server's heap clean) that
-    initialises Docling's DocumentConverter.  On first run this triggers a
-    ~300 MB download from HuggingFace; on subsequent runs it exits in < 5 s
-    because the weights are already cached.
+    calls get_default_tokenizer().  On first run this triggers a small download
+    from HuggingFace; on subsequent runs it exits immediately because the
+    tokenizer is already cached.
 
     After the subprocess exits (success or failure), HF_HUB_OFFLINE=1 and
     TRANSFORMERS_OFFLINE=1 are written into the parent process environment so
