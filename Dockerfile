@@ -52,24 +52,15 @@ mkdir -p "$HF_HOME" "$DOCLING_CACHE_DIR"
 # Do NOT add '|| true' — a silently broken image would set HF_HUB_OFFLINE=1
 # but have no cached models, causing LocalEntryNotFoundError at runtime.
 python -c "
-import sys
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter as _DC, PdfFormatOption
-opts = PdfPipelineOptions()
-opts.do_ocr = False
-opts.generate_page_images = False
-opts.generate_picture_images = False
-print('Downloading Docling layout/table ONNX models...', flush=True)
-_DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
-print('Docling ONNX models OK', flush=True)
-# sentence-transformers/all-MiniLM-L6-v2 tokenizer required by docling_core
-# HybridChunker.get_default_tokenizer() — loaded in the main API process on
-# every server start via get_ingestion_pipeline() (lru_cache, first call only).
+# Only cache the tokenizer used by HybridChunker in the main API process.
+# Docling ONNX layout/table models are downloaded lazily inside the docling
+# subprocess worker on first PDF conversion — no DocumentConverter import needed here.
+# Importing DocumentConverter in docling>=2.92 triggers asr_pipeline -> granite_vision
+# -> AutoProcessor which fails with CPU-only torch (torchvision::nms missing).
 print('Downloading sentence-transformers/all-MiniLM-L6-v2 tokenizer...', flush=True)
 from docling_core.transforms.chunker.tokenizer.huggingface import get_default_tokenizer
 get_default_tokenizer()
-print('All models cached OK', flush=True)
+print('Tokenizer cached OK', flush=True)
 "
 echo 'Pre-download complete'
 chown -R appuser:appuser /home/appuser/.cache 2>/dev/null || true
