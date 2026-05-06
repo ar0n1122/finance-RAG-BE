@@ -58,23 +58,45 @@ mkdir -p "$HF_HOME" "$DOCLING_CACHE_DIR"
 python -c "
 # With CPU torchvision (installed from PyTorch's CPU wheel index) the full
 # docling import chain works: granite_vision → AutoProcessor → torchvision.
-# Pre-download the layout (Heron) + table (TableFormer) ONNX models so the
-# subprocess worker never has to reach HuggingFace at runtime.
+# Pre-download layout + table (TableFormer) ONNX models so the subprocess
+# worker never has to reach HuggingFace at runtime.
+#
+# We cache BOTH heron (default) AND egret_medium so the worker succeeds
+# regardless of which RAG_DOCLING_LAYOUT_MODEL is set in the Cloud Run env.
 import sys
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter as _DC, PdfFormatOption
-opts = PdfPipelineOptions()
-opts.do_ocr = False
-opts.do_chart_extraction = False
-opts.do_code_enrichment = False
-opts.do_formula_enrichment = False
-opts.generate_page_images = False
-opts.generate_picture_images = False
-opts.generate_parsed_pages = False
-print('Downloading Docling layout/table ONNX models...', flush=True)
-_DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
-print('Docling ONNX models OK', flush=True)
+
+def _base_opts():
+    o = PdfPipelineOptions()
+    o.do_ocr = False
+    o.do_chart_extraction = False
+    o.do_code_enrichment = False
+    o.do_formula_enrichment = False
+    o.generate_page_images = False
+    o.generate_picture_images = False
+    o.generate_parsed_pages = False
+    return o
+
+# 1. Heron (default, 42.9M RT-DETR v2) — used when RAG_DOCLING_LAYOUT_MODEL=heron
+print('Downloading Docling heron layout + table ONNX models...', flush=True)
+_DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=_base_opts())})
+print('Heron ONNX models OK', flush=True)
+
+# 2. Egret-medium (19.5M D-Fine) — used when RAG_DOCLING_LAYOUT_MODEL=egret_medium
+# This is the model currently set in Cloud Run (RAG_DOCLING_LAYOUT_MODEL=egret_medium).
+print('Downloading Docling egret_medium layout ONNX model...', flush=True)
+try:
+    from docling.datamodel.pipeline_options import LayoutOptions, DOCLING_LAYOUT_EGRET_MEDIUM
+    opts2 = _base_opts()
+    opts2.layout_options = LayoutOptions(model_spec=DOCLING_LAYOUT_EGRET_MEDIUM)
+    _DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts2)})
+    print('Egret-medium ONNX model OK', flush=True)
+except (ImportError, AttributeError) as e:
+    # Older Docling that does not expose DOCLING_LAYOUT_EGRET_MEDIUM — skip silently.
+    print(f'egret_medium not available in this Docling version ({e}), skipped', flush=True)
+
 # sentence-transformers/all-MiniLM-L6-v2 tokenizer required by HybridChunker
 # in the main API process (get_ingestion_pipeline → DoclingHybridChunker.__init__).
 print('Downloading sentence-transformers/all-MiniLM-L6-v2 tokenizer...', flush=True)

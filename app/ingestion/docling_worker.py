@@ -76,9 +76,18 @@ def _run(pdf_path: str, output_path: str, document_id: str, filename: str) -> No
     wlog = _setup_worker_logging()
     wlog.info("worker_start", document_id=document_id, filename=filename)
 
+    # Time each import individually to pinpoint which one is slow.
+    _t_a = _time.perf_counter()
     from app.core.config import get_settings
+    wlog.info("worker_import_config", document_id=document_id, elapsed_s=round(_time.perf_counter() - _t_a, 2))
+
+    _t_b = _time.perf_counter()
     from app.ingestion.chunking.docling_hybrid import DoclingHybridChunker
+    wlog.info("worker_import_chunker", document_id=document_id, elapsed_s=round(_time.perf_counter() - _t_b, 2))
+
+    _t_c = _time.perf_counter()
     from app.ingestion.document_converter import DocumentConverter
+    wlog.info("worker_import_converter", document_id=document_id, elapsed_s=round(_time.perf_counter() - _t_c, 2))
 
     settings = get_settings()
 
