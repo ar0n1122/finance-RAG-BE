@@ -49,6 +49,8 @@ WORKDIR /home/appuser/app
 # We explicitly point both to appuser's home so models survive the USER switch.
 ENV HF_HOME=/home/appuser/.cache/huggingface
 ENV DOCLING_CACHE_DIR=/home/appuser/.cache/docling
+# Increment MODELS_CACHE_BUST to force re-download of ML models on next build.
+ARG MODELS_CACHE_BUST=2
 RUN <<'EOF'
 set -e
 mkdir -p "$HF_HOME" "$DOCLING_CACHE_DIR"
@@ -87,15 +89,11 @@ print('Heron ONNX models OK', flush=True)
 # 2. Egret-medium (19.5M D-Fine) — used when RAG_DOCLING_LAYOUT_MODEL=egret_medium
 # This is the model currently set in Cloud Run (RAG_DOCLING_LAYOUT_MODEL=egret_medium).
 print('Downloading Docling egret_medium layout ONNX model...', flush=True)
-try:
-    from docling.datamodel.pipeline_options import LayoutOptions, DOCLING_LAYOUT_EGRET_MEDIUM
-    opts2 = _base_opts()
-    opts2.layout_options = LayoutOptions(model_spec=DOCLING_LAYOUT_EGRET_MEDIUM)
-    _DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts2)})
-    print('Egret-medium ONNX model OK', flush=True)
-except (ImportError, AttributeError) as e:
-    # Older Docling that does not expose DOCLING_LAYOUT_EGRET_MEDIUM — skip silently.
-    print(f'egret_medium not available in this Docling version ({e}), skipped', flush=True)
+from docling.datamodel.pipeline_options import LayoutOptions, DOCLING_LAYOUT_EGRET_MEDIUM
+opts2 = _base_opts()
+opts2.layout_options = LayoutOptions(model_spec=DOCLING_LAYOUT_EGRET_MEDIUM)
+_DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts2)})
+print('Egret-medium ONNX model OK', flush=True)
 
 # sentence-transformers/all-MiniLM-L6-v2 tokenizer required by HybridChunker
 # in the main API process (get_ingestion_pipeline → DoclingHybridChunker.__init__).
