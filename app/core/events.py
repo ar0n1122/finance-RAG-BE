@@ -36,15 +36,19 @@ _DOCLING_PRELOAD_SCRIPT = (
     "from docling.datamodel.base_models import InputFormat;"
     "from docling.datamodel.pipeline_options import PdfPipelineOptions;"
     "from docling.document_converter import DocumentConverter as DC, PdfFormatOption;"
-    "opts = PdfPipelineOptions();"
-    "opts.do_ocr = False;"
-    "opts.do_chart_extraction = False;"
-    "opts.do_code_enrichment = False;"
-    "opts.do_formula_enrichment = False;"
-    "opts.generate_page_images = False;"
-    "opts.generate_picture_images = False;"
-    "opts.generate_parsed_pages = False;"
-    "DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)});"
+    "def _o():\n"
+    "  opts=PdfPipelineOptions();\n"
+    "  opts.do_ocr=False;opts.do_chart_extraction=False;opts.do_code_enrichment=False;\n"
+    "  opts.do_formula_enrichment=False;opts.generate_page_images=False;\n"
+    "  opts.generate_picture_images=False;opts.generate_parsed_pages=False;\n"
+    "  return opts\n"
+    "DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=_o())});"
+    # 1b. Also cache egret_medium — matches RAG_DOCLING_LAYOUT_MODEL=egret_medium in Cloud Run
+    "try:\n"
+    "  from docling.datamodel.pipeline_options import LayoutOptions,DOCLING_LAYOUT_EGRET_MEDIUM;\n"
+    "  o2=_o();o2.layout_options=LayoutOptions(model_spec=DOCLING_LAYOUT_EGRET_MEDIUM);\n"
+    "  DC(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=o2)})\n"
+    "except (ImportError,AttributeError):pass;"
     # 2. Pre-download sentence-transformers/all-MiniLM-L6-v2 tokenizer
     # (used by HybridChunker for token counting in the main API process)
     "from docling_core.transforms.chunker.tokenizer.huggingface import get_default_tokenizer;"
@@ -126,7 +130,11 @@ async def _preload_docling_models() -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """FastAPI lifespan — runs on startup and shutdown."""
     settings = get_settings()
-    setup_logging(log_level=settings.log_level, json_logs=not settings.debug)
+    # Cloud Run always sets K_SERVICE. Force JSON logs there so every log line
+    # is a queryable jsonPayload in Log Explorer — regardless of RAG_DEBUG.
+    # Locally (no K_SERVICE) respect the debug flag for readable console output.
+    in_cloud_run = bool(os.environ.get("K_SERVICE"))
+    setup_logging(log_level=settings.log_level, json_logs=in_cloud_run or not settings.debug)
 
     logger.info(
         "application_starting",
