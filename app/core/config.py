@@ -24,6 +24,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, EnvSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings.sources.providers.dotenv import DotEnvSettingsSource
 
 
 # Resolved once at import time — avoids reading os.environ on every access.
@@ -66,6 +67,19 @@ class _PipeAwareEnvSource(EnvSettingsSource):
     pipe-separated input (``a|b|c``), this would crash with a JSONDecodeError.
     By catching the ValueError and returning the raw string, we let the
     field_validator handle all format variants (JSON, pipe, comma).
+    """
+
+    def decode_complex_value(self, field_name: str, field_info: object, value: str) -> object:
+        try:
+            return super().decode_complex_value(field_name, field_info, value)
+        except ValueError:
+            return value  # pass raw string through to field_validator
+
+
+class _PipeAwareDotEnvSource(DotEnvSettingsSource):
+    """DotEnvSettingsSource that falls back to the raw string when json.loads fails.
+
+    Same rationale as _PipeAwareEnvSource but for values read from .env files.
     """
 
     def decode_complex_value(self, field_name: str, field_info: object, value: str) -> object:
@@ -326,7 +340,7 @@ class Settings(BaseSettings):
         return (
             init_settings,
             _PipeAwareEnvSource(settings_cls),
-            dotenv_settings,
+            _PipeAwareDotEnvSource(settings_cls),
             file_secret_settings,
         )
 
