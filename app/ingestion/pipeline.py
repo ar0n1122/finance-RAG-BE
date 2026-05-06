@@ -293,6 +293,15 @@ class IngestionPipeline:
         parsed JSON dict on success; raises ``IngestionError`` on failure.
         """
         backend_root = Path(__file__).resolve().parent.parent.parent
+        pdf_size_kb = round(pdf_path.stat().st_size / 1024, 1) if pdf_path.exists() else -1
+        logger.info(
+            "worker_spawning",
+            document_id=document_id,
+            filename=filename,
+            pdf_size_kb=pdf_size_kb,
+            timeout_s=timeout,
+        )
+        _t_spawn = time.perf_counter()
         result = subprocess.run(
             [
                 sys.executable,
@@ -302,17 +311,23 @@ class IngestionPipeline:
                 document_id,
                 filename,
             ],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=None,   # inherit parent stderr → [worker] lines appear in Cloud Run logs in real-time
             text=True,
             timeout=timeout,
             cwd=str(backend_root),
         )
+        logger.info(
+            "worker_exited",
+            document_id=document_id,
+            returncode=result.returncode,
+            elapsed_s=round(time.perf_counter() - _t_spawn, 2),
+        )
 
         if not output_path.exists():
-            stderr_tail = (result.stderr or "")[-1000:]
             raise IngestionError(
                 f"Worker produced no output (exit={result.returncode}). "
-                f"stderr: {stderr_tail}"
+                f"See [worker] lines in Cloud Run logs for document_id={document_id}"
             )
 
         raw = json.loads(output_path.read_text(encoding="utf-8"))
@@ -668,8 +683,16 @@ class IngestionPipeline:
         _EMB_START = 40
         _EMB_END   = 88
         n_embed_batches = (len(chunks) + batch_size - 1) // batch_size
+        logger.info(
+            "embed_start",
+            document_id=document_id,
+            total_chunks=len(chunks),
+            n_batches=n_embed_batches,
+            batch_size=batch_size,
+        )
 
         total = 0
+        _log_every = max(1, n_embed_batches // 4)   # log ~4 times during embedding
         for i in range(0, len(chunks), batch_size):
             batch_num = i // batch_size
             if document_id:
@@ -681,6 +704,15 @@ class IngestionPipeline:
                     emb_progress,
                     f"embedding {min(i + batch_size, len(chunks))}/{len(chunks)} chunks",
                 )
+                if batch_num % _log_every == 0:
+                    logger.info(
+                        "embed_batch_progress",
+                        document_id=document_id,
+                        batch=batch_num + 1,
+                        of=n_embed_batches,
+                        chunks_done=total,
+                        chunks_total=len(chunks),
+                    )
             batch = chunks[i : i + batch_size]
             texts: list[str] = []
             for c in batch:
@@ -720,5 +752,5 @@ class IngestionPipeline:
                     time.sleep(2 ** _attempt)
             total += len(points)
 
-        logger.debug("text_vectors_indexed", count=total)
+        logger.info("embed_complete", document_id=document_id, vectors_indexed=total)
         return total
