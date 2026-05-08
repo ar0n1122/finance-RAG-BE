@@ -210,29 +210,21 @@ class Settings(BaseSettings):
     reranker_api_format: Literal["openai", "ollama"] = "openai"
 
     # ── PDF Conversion (Docling) ───────────────────────────────────────────────
-    # "full"   = all models loaded, batch_size=4, best accuracy (~1.5 GB RAM)
-    # "medium" = batch_size=2, force_backend_text=True, table_mode follows config
-    #            (~800-900 MB RAM). Sweet spot: 2× faster than slim, more
-    #            accurate tables than slim (ACCURATE vs forced FAST). Safe at 2Gi.
-    # "slim"   = same Docling pipeline but with aggressive memory-saving knobs:
+    # "full" = all models loaded, batch_size=4, best accuracy (~1.5 GB RAM)
+    # "slim" = same Docling pipeline but with aggressive memory-saving knobs:
     #          batch_size=1, images_scale=0.25, table_mode=fast,
     #          force_backend_text=True (skip layout-model text extraction)
     #          Peak ~600–800 MB in subprocess, API server stays at ~200 MB.
-    docling_mode: Literal["full", "medium", "slim"] = "full"
+    docling_mode: Literal["full", "slim"] = "full"
 
-    # Layout model: "heron" (default, 42.9M params RT-DETR v2) or
-    # "egret_medium" (19.5M params D-Fine, ~54 MB lighter peak RAM)
-    docling_layout_model: str = "heron"
-    # Pages per subprocess batch. Each batch runs in a fresh OS process so the
-    # ONNX C++ heap (~1 GB) is fully freed between batches. 0 = no splitting.
-    docling_pages_per_batch: int = 25
-
+    docling_do_ocr: bool = False
     docling_do_table_structure: bool = True
     docling_table_mode: Literal["fast", "accurate"] = "accurate"
     docling_do_cell_matching: bool = True
-    docling_document_timeout: float | None = 1800.0  # seconds per document; None = no limit
+    docling_document_timeout: float | None = 600.0  # seconds per document; None = no limit
     docling_num_threads: int = 1   # keep low to avoid OOM on CPU
     docling_device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+    docling_images_scale: float = 0.5  # page render scale; lower = less RAM
 
     # Path for local 24-h upload cache files (blank = system temp dir)
     upload_cache_dir: str = ""
@@ -242,10 +234,6 @@ class Settings(BaseSettings):
     chunk_size: int = 1024
     chunk_overlap: int = 128
     min_chunk_chars: int = 60
-    # Hard cap on chunks per document. Docling triplet-format can produce
-    # 20k+ chunks from table-heavy financial PDFs; this prevents runaway
-    # embedding API costs and processing time. 0 = no cap.
-    max_chunks_per_document: int = 10000
 
     # ── RAG Pipeline ──────────────────────────────────────────────────────────
     rag_strategy: RAGStrategy = RAGStrategy.ADAPTIVE

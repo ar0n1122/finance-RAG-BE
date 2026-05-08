@@ -34,7 +34,7 @@ jobs:
         name: Build and push image
         run: |
           IMAGE_URL="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
-          docker build --build-arg MODELS_CACHE_BUST=5 -t "$IMAGE_URL" .
+          docker build -t "$IMAGE_URL" .
           docker push "$IMAGE_URL"
           echo "image_url=$IMAGE_URL" >> "$GITHUB_OUTPUT"
 
@@ -94,8 +94,6 @@ jobs:
           RAG_RRF_K=${{ vars.RAG_RRF_K }},\
           RAG_RERANKER_ENABLED=${{ vars.RAG_RERANKER_ENABLED }},\
           RAG_DOCLING_MODE=${{ vars.RAG_DOCLING_MODE }},\
-          RAG_DOCLING_LAYOUT_MODEL=${{ vars.RAG_DOCLING_LAYOUT_MODEL }},\
-          RAG_DOCLING_PAGES_PER_BATCH=${{ vars.RAG_DOCLING_PAGES_PER_BATCH }},\
           RAG_DOCLING_DO_TABLE_STRUCTURE=${{ vars.RAG_DOCLING_DO_TABLE_STRUCTURE }},\
           RAG_DOCLING_TABLE_MODE=${{ vars.RAG_DOCLING_TABLE_MODE }},\
           RAG_DOCLING_DO_CELL_MATCHING=${{ vars.RAG_DOCLING_DO_CELL_MATCHING }},\
@@ -107,7 +105,6 @@ jobs:
           RAG_CHUNK_SIZE=${{ vars.RAG_CHUNK_SIZE }},\
           RAG_CHUNK_OVERLAP=${{ vars.RAG_CHUNK_OVERLAP }},\
           RAG_MIN_CHUNK_CHARS=${{ vars.RAG_MIN_CHUNK_CHARS }},\
-          RAG_MAX_CHUNKS_PER_DOCUMENT=${{ vars.RAG_MAX_CHUNKS_PER_DOCUMENT }},\
           RAG_RAG_STRATEGY=${{ vars.RAG_RAG_STRATEGY }},\
           RAG_PROMPT_VERSION=${{ vars.RAG_PROMPT_VERSION }},\
           RAG_GUARDRAILS_ENABLED=${{ vars.RAG_GUARDRAILS_ENABLED }},\
@@ -120,8 +117,7 @@ jobs:
           RAG_REDIS_URL=${{ secrets.RAG_REDIS_URL }},\
           RAG_RATE_LIMIT_DOCS=${{ vars.RAG_RATE_LIMIT_DOCS }},\
           RAG_RATE_LIMIT_QUERIES=${{ vars.RAG_RATE_LIMIT_QUERIES }},\
-          RAG_RATE_LIMIT_EXEMPT_EMAILS=${{ vars.RAG_RATE_LIMIT_EXEMPT_EMAILS }},\
-          HF_HUB_OFFLINE=1"
+          RAG_RATE_LIMIT_EXEMPT_EMAILS=${{ vars.RAG_RATE_LIMIT_EXEMPT_EMAILS }}"
 
       - name: Show deployed URL
         run: |

@@ -59,16 +59,7 @@ class DocumentConverter:
     in the AST but not separately embedded.
     """
 
-    def __init__(self, *, skip_models: bool = False) -> None:
-        if skip_models:
-            # Caller explicitly requested a lightweight stub — no ONNX models loaded.
-            # Used by the main FastAPI process where PDFs are always routed to
-            # a subprocess worker; loading models here would waste 1–2 GB of RAM.
-            # Non-PDF content falls through to _fallback_convert() as normal.
-            self._converter = None
-            self._available = False
-            return
-
+    def __init__(self) -> None:
         try:
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import (
@@ -85,7 +76,6 @@ class DocumentConverter:
 
             settings = get_settings()
             slim = settings.docling_mode == "slim"
-            medium = settings.docling_mode == "medium"
 
             # ── Build PDF pipeline options ────────────────────────────────
             pipeline_options = PdfPipelineOptions()
@@ -93,7 +83,7 @@ class DocumentConverter:
             # Table structure — critical for financial reports
             pipeline_options.do_table_structure = settings.docling_do_table_structure
             if settings.docling_do_table_structure:
-                # slim mode forces FAST; medium/full respect the config setting
+                # slim mode uses FAST (smaller model footprint)
                 if slim:
                     mode = TableFormerMode.FAST
                 else:
@@ -107,8 +97,8 @@ class DocumentConverter:
                     do_cell_matching=settings.docling_do_cell_matching,
                 )
 
-            # OCR — permanently disabled; programmatic PDFs have reliable text layer
-            pipeline_options.do_ocr = False
+            # OCR — enable for scanned PDFs
+            pipeline_options.do_ocr = settings.docling_do_ocr
 
             # Timeout — prevents runaway parsing on malformed PDFs
             pipeline_options.document_timeout = settings.docling_document_timeout
@@ -135,30 +125,6 @@ class DocumentConverter:
                 )
             except ImportError:
                 logger.debug("accelerator_options_not_available")
-
-            # ── Select layout model ────────────────────────────────────
-            try:
-                from docling.datamodel.pipeline_options import (
-                    LayoutOptions,
-                    DOCLING_LAYOUT_HERON, DOCLING_LAYOUT_HERON_101,
-                    DOCLING_LAYOUT_EGRET_MEDIUM, DOCLING_LAYOUT_EGRET_LARGE,
-                    DOCLING_LAYOUT_EGRET_XLARGE, DOCLING_LAYOUT_V2,
-                )
-                _layout_map = {
-                    "heron"        : DOCLING_LAYOUT_HERON,
-                    "heron_101"    : DOCLING_LAYOUT_HERON_101,
-                    "egret_medium" : DOCLING_LAYOUT_EGRET_MEDIUM,
-                    "egret_large"  : DOCLING_LAYOUT_EGRET_LARGE,
-                    "egret_xlarge" : DOCLING_LAYOUT_EGRET_XLARGE,
-                    "v2"           : DOCLING_LAYOUT_V2,
-                }
-                _layout_spec = _layout_map.get(
-                    settings.docling_layout_model, DOCLING_LAYOUT_HERON
-                )
-                pipeline_options.layout_options = LayoutOptions(model_spec=_layout_spec)
-                logger.debug("docling_layout_model", model=settings.docling_layout_model)
-            except (ImportError, AttributeError):
-                pass  # older Docling — default layout model used
 
             # Disable features we don't need for financial docs
             pipeline_options.generate_page_images = False
@@ -187,24 +153,8 @@ class DocumentConverter:
                     "docling_slim_mode",
                     hint="batch=1, images_scale=0.25, force_backend_text=True, table_mode=fast",
                 )
-            elif medium:
-                # ── Medium-mode: speed + accuracy sweet spot ──────────────
-                # batch=2 → 2× faster than slim (270 pages → 135 iterations)
-                # force_backend_text keeps RAM safe (~800-900 MB peak)
-                # table_mode follows config (ACCURATE by default) — better
-                # cell detection than slim's forced FAST, with no extra RAM
-                # cost because force_backend_text already saves the headroom.
-                pipeline_options.layout_batch_size = 2
-                pipeline_options.table_batch_size = 2
-                pipeline_options.ocr_batch_size = 2
-                pipeline_options.images_scale = 0.25
-                pipeline_options.force_backend_text = True
-                logger.info(
-                    "docling_medium_mode",
-                    hint="batch=2, images_scale=0.25, force_backend_text=True, table_mode=config",
-                )
             else:
-                pipeline_options.images_scale = 0.5
+                pipeline_options.images_scale = settings.docling_images_scale
 
             # ── Create converter with format-specific options ─────────────
             self._converter = _DoclingDC(
@@ -219,12 +169,11 @@ class DocumentConverter:
             logger.info(
                 "docling_converter_ready",
                 mode=settings.docling_mode,
-                layout_model=settings.docling_layout_model,
+                do_ocr=settings.docling_do_ocr,
                 table_mode="fast" if slim else settings.docling_table_mode,
                 do_table_structure=settings.docling_do_table_structure,
                 timeout=settings.docling_document_timeout,
                 device=settings.docling_device,
-                pages_per_batch=settings.docling_pages_per_batch,
             )
         except ImportError:
             self._converter = None
