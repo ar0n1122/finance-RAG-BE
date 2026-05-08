@@ -33,6 +33,15 @@ FROM python:3.12-slim AS runtime
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Install system libraries required by OpenCV (cv2) at runtime.
+# cv2 is imported by docling_ibm_models (TableFormer) and needs libxcb1
+# even in headless/non-display mode on python:3.12-slim.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libxcb1 \
+    libxext6 \
+    libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash appuser
 WORKDIR /home/appuser/app
@@ -50,7 +59,7 @@ WORKDIR /home/appuser/app
 ENV HF_HOME=/home/appuser/.cache/huggingface
 ENV DOCLING_CACHE_DIR=/home/appuser/.cache/docling
 # Increment MODELS_CACHE_BUST to force re-download of ML models on next build.
-ARG MODELS_CACHE_BUST=3
+ARG MODELS_CACHE_BUST=4
 RUN <<'EOF'
 set -e
 mkdir -p "$HF_HOME" "$DOCLING_CACHE_DIR"
