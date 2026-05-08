@@ -23,7 +23,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
     # docling's import chain (granite_vision → AutoProcessor → torchvision).
     # Installing from the CPU index gives a CUDA-free wheel that loads cleanly.
     pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir .
+    pip install --no-cache-dir . && \
+    # Replace opencv-python (full, needs X11/libxcb/libgthread) with the headless
+    # variant which has no display dependencies — safe for all server/Cloud Run use.
+    pip uninstall -y opencv-python 2>/dev/null || true && \
+    pip install --no-cache-dir opencv-python-headless
 
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
@@ -33,12 +37,11 @@ FROM python:3.12-slim AS runtime
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install system libraries required by OpenCV (cv2) at runtime.
-# cv2 is imported by docling_ibm_models (TableFormer) and needs libxcb1
-# even in headless/non-display mode on python:3.12-slim.
+# Install system libraries required by opencv-python-headless at runtime.
+# Headless cv2 needs libglib2.0-0 (libgthread-2.0.so.0) and libgl1 (libGL.so.1).
+# No X11/xcb/xext libs needed — headless strips all display backends.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libxcb1 \
-    libxext6 \
+    libglib2.0-0 \
     libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -59,7 +62,7 @@ WORKDIR /home/appuser/app
 ENV HF_HOME=/home/appuser/.cache/huggingface
 ENV DOCLING_CACHE_DIR=/home/appuser/.cache/docling
 # Increment MODELS_CACHE_BUST to force re-download of ML models on next build.
-ARG MODELS_CACHE_BUST=4
+ARG MODELS_CACHE_BUST=5
 RUN <<'EOF'
 set -e
 mkdir -p "$HF_HOME" "$DOCLING_CACHE_DIR"
