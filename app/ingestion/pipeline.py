@@ -161,23 +161,15 @@ class IngestionPipeline:
             if content is not None:
                 logger.debug("process_using_cache", document_id=document_id)
             else:
-                _t_dl = time.perf_counter()
                 logger.info("process_downloading_from_gcs", document_id=document_id)
                 content = self._gcs.download_bytes(f"raw/{document_id}/{filename}")
                 self._write_cache(document_id, filename, content)
-                logger.info(
-                    "gcs_download_complete",
-                    document_id=document_id,
-                    size_kb=round(len(content) / 1024, 1),
-                    elapsed_s=round(time.perf_counter() - _t_dl, 2),
-                )
 
         logger.info("processing_started", document_id=document_id, filename=filename)
         self._update_progress(document_id, 5, "converting")
 
         try:
             # 1+2. Convert PDF → chunks (subprocess for PDFs, in-process for others)
-            _t_conv = time.perf_counter()
             if content_type == "application/pdf":
                 chunks, total_pages = self._convert_and_chunk_subprocess(
                     document_id=document_id,
@@ -194,37 +186,13 @@ class IngestionPipeline:
                 chunks = self._chunker.chunk(parsed)
                 total_pages = parsed.total_pages
 
-            logger.info(
-                "conversion_phase_complete",
-                document_id=document_id,
-                chunks=len(chunks),
-                elapsed_s=round(time.perf_counter() - _t_conv, 2),
-            )
             self._update_progress(document_id, 40, "embedding")
-
-            # Cap chunks to prevent runaway embedding costs on table-heavy PDFs
-            max_chunks = self._settings.max_chunks_per_document
-            if max_chunks and len(chunks) > max_chunks:
-                logger.warning(
-                    "chunk_count_capped",
-                    document_id=document_id,
-                    original=len(chunks),
-                    capped=max_chunks,
-                )
-                chunks = chunks[:max_chunks]
 
             # 3. Ensure Qdrant collection exists
             self._ensure_collection()
 
             # 4. Embed + index text/table chunks
-            _t_emb = time.perf_counter()
-            vectors_indexed = self._embed_and_index(chunks, document_id=document_id)
-            logger.info(
-                "embedding_phase_complete",
-                document_id=document_id,
-                vectors=vectors_indexed,
-                elapsed_s=round(time.perf_counter() - _t_emb, 2),
-            )
+            vectors_indexed = self._embed_and_index(chunks)
             self._update_progress(document_id, 90, "finalizing")
 
             elapsed = time.perf_counter() - start
@@ -280,75 +248,6 @@ class IngestionPipeline:
 
     # ── Subprocess-based PDF conversion ───────────────────────────────────────
 
-    def _run_worker(
-        self,
-        pdf_path: Path,
-        output_path: Path,
-        document_id: str,
-        filename: str,
-        timeout: float,
-    ) -> dict:
-        """
-        Spawn one docling_worker subprocess for *pdf_path*.  Returns the
-        parsed JSON dict on success; raises ``IngestionError`` on failure.
-        """
-        backend_root = Path(__file__).resolve().parent.parent.parent
-        pdf_size_kb = round(pdf_path.stat().st_size / 1024, 1) if pdf_path.exists() else -1
-        logger.info(
-            "worker_spawning",
-            document_id=document_id,
-            filename=filename,
-            pdf_size_kb=pdf_size_kb,
-            timeout_s=timeout,
-        )
-        _t_spawn = time.perf_counter()
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m", "app.ingestion.docling_worker",
-                str(pdf_path),
-                str(output_path),
-                document_id,
-                filename,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=None,   # inherit parent stderr → [worker] lines appear in Cloud Run logs in real-time
-            text=True,
-            timeout=timeout,
-            cwd=str(backend_root),
-        )
-        logger.info(
-            "worker_exited",
-            document_id=document_id,
-            returncode=result.returncode,
-            elapsed_s=round(time.perf_counter() - _t_spawn, 2),
-        )
-
-        if not output_path.exists():
-            raise IngestionError(
-                f"Worker produced no output (exit={result.returncode}). "
-                f"See [worker] lines in Cloud Run logs for document_id={document_id}"
-            )
-
-        raw = json.loads(output_path.read_text(encoding="utf-8"))
-
-        if raw.get("status") != "success":
-            error_msg = raw.get("error", "unknown worker error")
-            error_type = raw.get("error_type", "")
-            raise IngestionError(
-                f"Subprocess conversion failed ({error_type}): {error_msg}"
-            )
-
-        # Log worker stdout so [worker_timing] lines appear in Cloud Run logs.
-        if result.stdout and result.stdout.strip():
-            logger.info(
-                "worker_output",
-                document_id=document_id,
-                output=result.stdout.strip(),
-            )
-
-        return raw
-
     def _convert_and_chunk_subprocess(
         self,
         document_id: str,
@@ -356,177 +255,116 @@ class IngestionPipeline:
         content: bytes,
     ) -> tuple[list[Chunk], int]:
         """
-        Run Docling conversion + chunking in an isolated subprocess per batch.
-
-        When ``docling_pages_per_batch`` > 0 and the PDF has more pages than
-        that threshold, the PDF is split into smaller files and one fresh
-        subprocess is spawned per batch.  Each subprocess exits after its
-        batch — releasing all ONNX C++ memory — so peak RAM is capped at
-        one batch worth instead of accumulating across the whole document.
+        Run Docling conversion + chunking in an isolated subprocess.
 
         Returns ``(chunks, total_pages)``.
+
+        The subprocess loads Docling models, processes the PDF, writes JSON
+        output, and exits — releasing all model memory.  If it OOMs or
+        crashes, only the worker process dies; the API server is unaffected.
         """
         # Ensure the PDF is on disk for the subprocess to read
         pdf_path = self._cache_path(document_id, filename)
         if not pdf_path.exists():
             pdf_path.write_bytes(content)
 
-        timeout = self._settings.docling_document_timeout or 1800
-        pages_per_batch = self._settings.docling_pages_per_batch
+        output_path = pdf_path.with_suffix(".chunks.json")
 
-        # ── Count pages without loading Docling ───────────────────────────
-        total_pages = 0
-        split_paths: list[Path] = []
-        split_dir: Path | None = None
-        try:
-            import pypdfium2 as _pdfium
-            src_doc = _pdfium.PdfDocument(str(pdf_path))
-            total_pages = len(src_doc)
+        # The worker module lives at app/ingestion/docling_worker.py
+        # Run from the backend root so `python -m app.ingestion.docling_worker` works
+        backend_root = Path(__file__).resolve().parent.parent.parent
 
-            if pages_per_batch > 0 and total_pages > pages_per_batch:
-                split_dir = Path(tempfile.mkdtemp(prefix="rag_pdf_split_"))
-                for idx, start0 in enumerate(range(0, total_pages, pages_per_batch)):
-                    end0 = min(start0 + pages_per_batch, total_pages)
-                    chunk_doc = _pdfium.PdfDocument.new()
-                    chunk_doc.import_pages(src_doc, list(range(start0, end0)))
-                    tmp_path = split_dir / f"chunk_{idx:03d}.pdf"
-                    chunk_doc.save(str(tmp_path))
-                    chunk_doc.close()
-                    split_paths.append(tmp_path)
-                src_doc.close()
-                logger.info(
-                    "pdf_split_for_batching",
-                    document_id=document_id,
-                    total_pages=total_pages,
-                    batches=len(split_paths),
-                    pages_per_batch=pages_per_batch,
-                )
-            else:
-                src_doc.close()
-        except ImportError:
-            logger.debug("pypdfium2_not_available_skipping_split")
-
-        use_batching = bool(split_paths)
-        batch_files = split_paths if use_batching else [pdf_path]
-        n_batches = len(batch_files)
+        timeout = self._settings.docling_document_timeout or 900
 
         logger.info(
             "subprocess_convert_start",
             document_id=document_id,
             filename=filename,
-            batches=n_batches,
-            total_pages=total_pages,
+            pdf_path=str(pdf_path),
             timeout=timeout,
         )
 
-        # Progress budget: converting = 5% → 38%  (33 points spread across batches)
-        # Embedding will use 40% → 88%, finalizing 90%, complete 100%.
-        _CONV_START = 5
-        _CONV_END   = 38
-
-        all_chunks: list[Chunk] = []
-        global_chunk_index = 0
-
         try:
-            for i, batch_pdf in enumerate(batch_files):
-                # Update Firestore before spawning so UI shows forward motion
-                batch_progress = _CONV_START + round(
-                    (_CONV_END - _CONV_START) * i / n_batches
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m", "app.ingestion.docling_worker",
+                    str(pdf_path),
+                    str(output_path),
+                    document_id,
+                    filename,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(backend_root),
+            )
+
+            # ── Read output ───────────────────────────────────────────────
+            if not output_path.exists():
+                stderr_tail = (result.stderr or "")[-1000:]
+                raise IngestionError(
+                    f"Worker produced no output (exit={result.returncode}). "
+                    f"stderr: {stderr_tail}"
                 )
-                batch_label = (
-                    f"converting pages {i * pages_per_batch + 1}–"
-                    f"{min((i + 1) * pages_per_batch, total_pages)} of {total_pages}"
-                    if use_batching
-                    else "converting"
-                )
-                self._update_progress(document_id, batch_progress, batch_label)
-                logger.info(
-                    "batch_start",
-                    document_id=document_id,
-                    batch=i + 1,
-                    of=n_batches,
-                    progress=batch_progress,
-                    label=batch_label,
+
+            raw = json.loads(output_path.read_text(encoding="utf-8"))
+
+            if raw.get("status") != "success":
+                error_msg = raw.get("error", "unknown worker error")
+                error_type = raw.get("error_type", "")
+                raise IngestionError(
+                    f"Subprocess conversion failed ({error_type}): {error_msg}"
                 )
 
-                output_path = batch_pdf.with_suffix(f".batch{i}.json")
-                _t_batch = time.perf_counter()
-                try:
-                    raw = self._run_worker(
-                        batch_pdf, output_path, document_id, filename, timeout
-                    )
-                    # total_pages from the first (or only) batch is authoritative
-                    if i == 0 and not use_batching:
-                        total_pages = raw.get("total_pages", total_pages)
-                    elif not use_batching:
-                        total_pages = raw.get("total_pages", total_pages)
+            # ── Reconstruct Chunk objects ─────────────────────────────────
+            chunks = [
+                Chunk(
+                    chunk_id=c["chunk_id"],
+                    text=c["text"],
+                    enriched_text=c.get("enriched_text"),
+                    content_type=ContentType(c["content_type"]),
+                    document_id=c["document_id"],
+                    page=c["page"],
+                    section=c.get("section"),
+                    chunk_index=c["chunk_index"],
+                    token_count=c["token_count"],
+                    metadata=c.get("metadata", {}),
+                )
+                for c in raw["chunks"]
+            ]
 
-                    for c in raw["chunks"]:
-                        all_chunks.append(Chunk(
-                            chunk_id=c["chunk_id"],
-                            text=c["text"],
-                            enriched_text=c.get("enriched_text"),
-                            content_type=ContentType(c["content_type"]),
-                            document_id=c["document_id"],
-                            page=c["page"],
-                            section=c.get("section"),
-                            chunk_index=global_chunk_index,
-                            token_count=c["token_count"],
-                            metadata=c.get("metadata", {}),
-                        ))
-                        global_chunk_index += 1
+            total_pages = raw.get("total_pages", 0)
 
-                    logger.info(
-                        "subprocess_batch_complete",
-                        document_id=document_id,
-                        batch=i + 1,
-                        of=n_batches,
-                        batch_chunks=len(raw["chunks"]),
-                        total_chunks_so_far=global_chunk_index,
-                        elapsed_s=round(time.perf_counter() - _t_batch, 2),
-                    )
-                except subprocess.TimeoutExpired:
-                    logger.error(
-                        "subprocess_batch_timeout",
-                        document_id=document_id,
-                        batch=i + 1,
-                        timeout=timeout,
-                    )
-                    raise IngestionError(
-                        f"PDF batch {i + 1}/{len(batch_files)} timed out after {timeout}s"
-                    )
-                except json.JSONDecodeError as exc:
-                    raise IngestionError(
-                        f"Worker batch {i + 1} output is not valid JSON: {exc}"
-                    ) from exc
-                finally:
-                    try:
-                        output_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+            logger.info(
+                "subprocess_convert_complete",
+                document_id=document_id,
+                total_chunks=len(chunks),
+                total_pages=total_pages,
+                exit_code=result.returncode,
+            )
 
+            return chunks, total_pages
+
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "subprocess_convert_timeout",
+                document_id=document_id,
+                timeout=timeout,
+            )
+            raise IngestionError(
+                f"PDF conversion timed out after {timeout}s for '{filename}'"
+            )
+        except json.JSONDecodeError as exc:
+            raise IngestionError(
+                f"Worker output is not valid JSON for '{filename}': {exc}"
+            ) from exc
         finally:
-            # Clean up split temp files
-            if split_dir is not None:
-                for p in split_paths:
-                    try:
-                        p.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                try:
-                    split_dir.rmdir()
-                except OSError:
-                    pass
-
-        logger.info(
-            "subprocess_convert_complete",
-            document_id=document_id,
-            total_chunks=len(all_chunks),
-            total_pages=total_pages,
-            batches=len(batch_files),
-        )
-
-        return all_chunks, total_pages
+            # Always clean up the output JSON (success or failure)
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def ingest(
         self,
@@ -666,53 +504,13 @@ class IngestionPipeline:
 
     # ── Embedding + indexing ──────────────────────────────────────────────────
 
-    def _embed_and_index(
-        self,
-        chunks: list[Chunk],
-        batch_size: int | None = None,
-        document_id: str = "",
-    ) -> int:
+    def _embed_and_index(self, chunks: list[Chunk], batch_size: int = 32) -> int:
         """Embed and upsert text/table chunks to Qdrant.  Returns count."""
         if not chunks:
             return 0
 
-        if batch_size is None:
-            batch_size = self._settings.embedding_batch_size
-
-        # Progress budget: embedding = 40% → 88%  (48 points across embed batches)
-        _EMB_START = 40
-        _EMB_END   = 88
-        n_embed_batches = (len(chunks) + batch_size - 1) // batch_size
-        logger.info(
-            "embed_start",
-            document_id=document_id,
-            total_chunks=len(chunks),
-            n_batches=n_embed_batches,
-            batch_size=batch_size,
-        )
-
         total = 0
-        _log_every = max(1, n_embed_batches // 4)   # log ~4 times during embedding
         for i in range(0, len(chunks), batch_size):
-            batch_num = i // batch_size
-            if document_id:
-                emb_progress = _EMB_START + round(
-                    (_EMB_END - _EMB_START) * batch_num / n_embed_batches
-                )
-                self._update_progress(
-                    document_id,
-                    emb_progress,
-                    f"embedding {min(i + batch_size, len(chunks))}/{len(chunks)} chunks",
-                )
-                if batch_num % _log_every == 0:
-                    logger.info(
-                        "embed_batch_progress",
-                        document_id=document_id,
-                        batch=batch_num + 1,
-                        of=n_embed_batches,
-                        chunks_done=total,
-                        chunks_total=len(chunks),
-                    )
             batch = chunks[i : i + batch_size]
             texts: list[str] = []
             for c in batch:
@@ -752,5 +550,5 @@ class IngestionPipeline:
                     time.sleep(2 ** _attempt)
             total += len(points)
 
-        logger.info("embed_complete", document_id=document_id, vectors_indexed=total)
+        logger.debug("text_vectors_indexed", count=total)
         return total
