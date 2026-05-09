@@ -10,6 +10,10 @@ env:
   REGION: us-central1
   SERVICE_NAME: rag-backend
   REPOSITORY: rag-repo
+  # Auto-incrementing version: v1.0.<run_number> (e.g. v1.0.42)
+  # Each push to main produces a unique, ordered tag that GCP Artifact Registry
+  # cleanup policies ("keep last N versions") can evaluate by upload time.
+  APP_VERSION: "v1.0.${{ github.run_number }}"
 
 jobs:
   deploy:
@@ -33,10 +37,20 @@ jobs:
       - id: build
         name: Build and push image
         run: |
-          IMAGE_URL="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
-          docker build -t "$IMAGE_URL" .
-          docker push "$IMAGE_URL"
-          echo "image_url=$IMAGE_URL" >> "$GITHUB_OUTPUT"
+          BASE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}"
+          IMAGE_VERSION="$BASE:${{ env.APP_VERSION }}"
+          IMAGE_LATEST="$BASE:latest"
+
+          docker build \
+            -t "$IMAGE_VERSION" \
+            -t "$IMAGE_LATEST" \
+            --build-arg APP_VERSION="${{ env.APP_VERSION }}" \
+            .
+
+          docker push "$IMAGE_VERSION"
+          docker push "$IMAGE_LATEST"
+
+          echo "image_url=$IMAGE_VERSION" >> "$GITHUB_OUTPUT"
 
       - id: deploy
         name: Deploy to Cloud Run (free-tier-safe)
@@ -57,7 +71,7 @@ jobs:
             --update-env-vars="\
           RAG_ENV=${{ vars.RAG_ENV }},\
           RAG_APP_NAME=${{ vars.RAG_APP_NAME }},\
-          RAG_APP_VERSION=${{ vars.RAG_APP_VERSION }},\
+          RAG_APP_VERSION=${{ env.APP_VERSION }},\
           RAG_DEBUG=${{ vars.RAG_DEBUG }},\
           RAG_HOST=${{ vars.RAG_HOST }},\
           RAG_PORT=${{ vars.RAG_PORT }},\

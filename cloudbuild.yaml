@@ -38,9 +38,11 @@ steps:
     args:
       - "build"
       - "-t"
-      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_VERSION}"
       - "-t"
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
+      - "--build-arg"
+      - "APP_VERSION=${_VERSION}"
       - "."
     id: build
     waitFor: [lint, test]
@@ -66,7 +68,7 @@ steps:
       - "run"
       - "deploy"
       - "${_SERVICE}"
-      - "--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - "--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_VERSION}"
       - "--region=${_REGION}"
       - "--platform=managed"
       - "--allow-unauthenticated"
@@ -84,6 +86,10 @@ substitutions:
   _REGION: us-central1
   _REPO: rag-repo
   _SERVICE: rag-backend
+  # Override _VERSION per trigger with a value like v1.0.42.
+  # When triggered by Cloud Build directly (not GitHub Actions), set this
+  # substitution in the trigger config. Format: v<major>.<minor>.<build_num>
+  _VERSION: v1.0.0-dev
 
 options:
   logging: CLOUD_LOGGING_ONLY

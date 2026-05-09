@@ -41,6 +41,11 @@ USER appuser
 # Cloud Run injects PORT (default 8080); the app also reads RAG_PORT.
 ENV PORT=8080
 
+# Version label (set via --build-arg APP_VERSION=v1.0.42 during CI build)
+ARG APP_VERSION=dev
+LABEL org.opencontainers.image.version="${APP_VERSION}"
+ENV APP_VERSION="${APP_VERSION}"
+
 EXPOSE ${PORT}
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
