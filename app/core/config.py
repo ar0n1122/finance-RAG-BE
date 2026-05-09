@@ -24,6 +24,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, EnvSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings.sources.providers.dotenv import DotEnvSettingsSource
 
 
 # Resolved once at import time — avoids reading os.environ on every access.
@@ -75,6 +76,19 @@ class _PipeAwareEnvSource(EnvSettingsSource):
             return value  # pass raw string through to field_validator
 
 
+class _PipeAwareDotEnvSource(DotEnvSettingsSource):
+    """DotEnvSettingsSource that falls back to the raw string when json.loads fails.
+
+    Same rationale as _PipeAwareEnvSource but for values read from .env files.
+    """
+
+    def decode_complex_value(self, field_name: str, field_info: object, value: str) -> object:
+        try:
+            return super().decode_complex_value(field_name, field_info, value)
+        except ValueError:
+            return value  # pass raw string through to field_validator
+
+
 class Settings(BaseSettings):
     """Central configuration — single source of truth for the entire backend."""
 
@@ -84,6 +98,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        env_ignore_empty=True,  # unset GH Actions vars arrive as "" → use field default
     )
 
     # ── Environment Profile ──────────────────────────────────────────────────
@@ -196,21 +211,18 @@ class Settings(BaseSettings):
     reranker_api_format: Literal["openai", "ollama"] = "openai"
 
     # ── PDF Conversion (Docling) ───────────────────────────────────────────────
-    # "full"   = all models loaded, batch_size=4, best accuracy (~1.5 GB RAM)
-    # "medium" = batch_size=2, force_backend_text=True, table_mode follows config
-    #            (~800-900 MB RAM). Sweet spot: 2× faster than slim, more
-    #            accurate tables than slim (ACCURATE vs forced FAST). Safe at 2Gi.
-    # "slim"   = same Docling pipeline but with aggressive memory-saving knobs:
+    # "full" = all models loaded, batch_size=4, best accuracy (~1.5 GB RAM)
+    # "slim" = same Docling pipeline but with aggressive memory-saving knobs:
     #          batch_size=1, images_scale=0.25, table_mode=fast,
     #          force_backend_text=True (skip layout-model text extraction)
     #          Peak ~600–800 MB in subprocess, API server stays at ~200 MB.
-    docling_mode: Literal["full", "medium", "slim"] = "full"
+    docling_mode: Literal["full", "slim"] = "full"
 
     docling_do_ocr: bool = False
     docling_do_table_structure: bool = True
     docling_table_mode: Literal["fast", "accurate"] = "accurate"
     docling_do_cell_matching: bool = True
-    docling_document_timeout: float | None = 1800.0  # seconds per document; None = no limit
+    docling_document_timeout: float | None = 600.0  # seconds per document; None = no limit
     docling_num_threads: int = 1   # keep low to avoid OOM on CPU
     docling_device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
     docling_images_scale: float = 0.5  # page render scale; lower = less RAM
@@ -223,10 +235,6 @@ class Settings(BaseSettings):
     chunk_size: int = 1024
     chunk_overlap: int = 128
     min_chunk_chars: int = 60
-    # Hard cap on chunks per document. Docling triplet-format can produce
-    # 20k+ chunks from table-heavy financial PDFs; this prevents runaway
-    # embedding API costs and processing time. 0 = no cap.
-    max_chunks_per_document: int = 10000
 
     # ── RAG Pipeline ──────────────────────────────────────────────────────────
     rag_strategy: RAGStrategy = RAGStrategy.ADAPTIVE
@@ -321,7 +329,7 @@ class Settings(BaseSettings):
         return (
             init_settings,
             _PipeAwareEnvSource(settings_cls),
-            dotenv_settings,
+            _PipeAwareDotEnvSource(settings_cls),
             file_secret_settings,
         )
 

@@ -166,6 +166,20 @@ class IngestionPipeline:
                 self._write_cache(document_id, filename, content)
 
         logger.info("processing_started", document_id=document_id, filename=filename)
+
+        # ── Detect first-run model download ───────────────────────────────────
+        # On Cloud Run cold starts (no model cache), docling downloads ~500 MB of
+        # AI models from HuggingFace before processing starts.  Warn the user so
+        # the long wait doesn't look like a hang.
+        _hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+        _docling_cache = Path.home() / ".cache" / "docling"
+        if not _hf_cache.exists() and not _docling_cache.exists():
+            self._update_progress(
+                document_id, 2,
+                "AI models are still loading in the background — "
+                "this upload may take longer than usual."
+            )
+
         self._update_progress(document_id, 5, "converting")
 
         try:
@@ -187,17 +201,6 @@ class IngestionPipeline:
                 total_pages = parsed.total_pages
 
             self._update_progress(document_id, 40, "embedding")
-
-            # Cap chunks to prevent runaway embedding costs on table-heavy PDFs
-            max_chunks = self._settings.max_chunks_per_document
-            if max_chunks and len(chunks) > max_chunks:
-                logger.warning(
-                    "chunk_count_capped",
-                    document_id=document_id,
-                    original=len(chunks),
-                    capped=max_chunks,
-                )
-                chunks = chunks[:max_chunks]
 
             # 3. Ensure Qdrant collection exists
             self._ensure_collection()
@@ -285,7 +288,7 @@ class IngestionPipeline:
         # Run from the backend root so `python -m app.ingestion.docling_worker` works
         backend_root = Path(__file__).resolve().parent.parent.parent
 
-        timeout = self._settings.docling_document_timeout or 1800
+        timeout = self._settings.docling_document_timeout or 900
 
         logger.info(
             "subprocess_convert_start",
@@ -515,13 +518,10 @@ class IngestionPipeline:
 
     # ── Embedding + indexing ──────────────────────────────────────────────────
 
-    def _embed_and_index(self, chunks: list[Chunk], batch_size: int | None = None) -> int:
+    def _embed_and_index(self, chunks: list[Chunk], batch_size: int = 32) -> int:
         """Embed and upsert text/table chunks to Qdrant.  Returns count."""
         if not chunks:
             return 0
-
-        if batch_size is None:
-            batch_size = self._settings.embedding_batch_size
 
         total = 0
         for i in range(0, len(chunks), batch_size):
