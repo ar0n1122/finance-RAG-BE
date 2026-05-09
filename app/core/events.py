@@ -5,7 +5,11 @@ Application lifecycle events (startup / shutdown).
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI
@@ -14,6 +18,35 @@ from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
 
 logger = get_logger(__name__)
+
+
+def _warmup_docling_models() -> None:
+    """Daemon thread: silently download docling/HF models if not yet cached.
+
+    Runs a subprocess that instantiates DocumentConverter (which triggers the
+    HuggingFace model download).  Exits immediately if the cache already exists.
+    Non-fatal — any failure is logged as a warning and ignored.
+    """
+    _hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+    _docling_cache = Path.home() / ".cache" / "docling"
+    if _hf_cache.exists() or _docling_cache.exists():
+        return  # models already on disk — nothing to do
+
+    logger.info("docling_model_warmup_started", hint="downloading ~500 MB in background")
+    try:
+        backend_root = Path(__file__).resolve().parent.parent.parent
+        subprocess.run(
+            [
+                sys.executable, "-c",
+                "from app.ingestion.document_converter import DocumentConverter; DocumentConverter()",
+            ],
+            cwd=str(backend_root),
+            timeout=600,  # 10 min ceiling
+            capture_output=True,
+        )
+        logger.info("docling_model_warmup_complete")
+    except Exception as exc:
+        logger.warning("docling_model_warmup_failed", error=str(exc))
 
 
 @asynccontextmanager
@@ -67,6 +100,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.warning("redis_unreachable_rate_limiting_disabled", url=settings.redis_url)
     except Exception as exc:
         logger.warning("redis_startup_check_failed", error=str(exc))
+
+    # Background: warm up docling model cache so the first upload doesn't block on downloads
+    threading.Thread(target=_warmup_docling_models, daemon=True, name="docling-warmup").start()
 
     # Mark documents stuck in "processing" from a previous crash as "failed"
     try:

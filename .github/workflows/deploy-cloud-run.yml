@@ -53,6 +53,7 @@ jobs:
             --no-cpu-throttling \
             --concurrency=20 \
             --timeout=300 \
+            --remove-env-vars="HF_HUB_OFFLINE" \
             --update-env-vars="\
           RAG_ENV=${{ vars.RAG_ENV }},\
           RAG_APP_NAME=${{ vars.RAG_APP_NAME }},\

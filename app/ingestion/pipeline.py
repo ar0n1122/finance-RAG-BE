@@ -166,6 +166,20 @@ class IngestionPipeline:
                 self._write_cache(document_id, filename, content)
 
         logger.info("processing_started", document_id=document_id, filename=filename)
+
+        # ── Detect first-run model download ───────────────────────────────────
+        # On Cloud Run cold starts (no model cache), docling downloads ~500 MB of
+        # AI models from HuggingFace before processing starts.  Warn the user so
+        # the long wait doesn't look like a hang.
+        _hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+        _docling_cache = Path.home() / ".cache" / "docling"
+        if not _hf_cache.exists() and not _docling_cache.exists():
+            self._update_progress(
+                document_id, 2,
+                "AI models are still loading in the background — "
+                "this upload may take longer than usual."
+            )
+
         self._update_progress(document_id, 5, "converting")
 
         try:
